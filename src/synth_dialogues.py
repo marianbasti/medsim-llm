@@ -1,6 +1,46 @@
 import json, random
 import re
 import argparse
+import logging
+from tqdm import tqdm
+import tenacity
+from pathlib import Path
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Any, Tuple
+from validation import validate_medical_content
+from openai import OpenAI
+from config import Config
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('dialogue_generation.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Add retry decorator for API calls
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+    retry=tenacity.retry_if_exception_type((TimeoutError, ConnectionError)),
+    before_sleep=lambda retry_state: logger.warning(f"API call failed, retrying in {retry_state.next_action.sleep} seconds...")
+)
+def api_call_with_retry(client, messages, temperature, response_format, model):
+    """Make an API call with retry logic"""
+    if not model:
+        raise ValueError("Model ID is required")
+    
+    return client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        extra_body={"guided_json": response_format}
+    )
 
 parser = argparse.ArgumentParser()
 
@@ -26,21 +66,13 @@ Only provide the spoken dialogue, without any additional explanation, performanc
 
 """
 
+# Updated schema for vLLM - dialogue schema
 dialogue_json_schema = {
-    "type": "json_object",
-    "schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "dialogue": {
-                "type": "array",
-                "items": {
-                    "$ref": "#/definitions/message"
-                }
-            }
-        },
-        "definitions": {
-            "message": {
+    "type": "object",
+    "properties": {
+        "dialogue": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
                     "role": {
@@ -51,111 +83,122 @@ dialogue_json_schema = {
                 },
                 "required": ["role", "content"]
             }
-        },
-        "required": ["dialogue"]
-    }
+        }
+    },
+    "required": ["dialogue"]
 }
 
 ### PATIENT CARD PROMPT AND JSON SCHEMA
 prompt_script_2 = """Generate a patient card for {name} that has {illness}. Their symptoms are: {symptoms}.
-The patient card must have with the following features: demographics, medical history, current symptoms, personal details, behavioral and cognitive factors, and healthcare utilization. Ensure that the patient card is realistic and diverse in terms of age, sex, occupation, and medical conditions. Use the following JSON format:
+The patient card must have with the following features: demographics, medical history, current symptoms, personal details, behavioral and cognitive factors, and healthcare utilization. Ensure that the patient card is realistic and diverse in terms of age, sex, occupation, and medical conditions. Use natural language. The features should be realistic and coherent. Let's have a complex and low-income social context, in a country with free healthcare. The patient's dialogue must be short and simple."""
 
-{{
-"Name": {name},
-"Demographics": {{"age", "sex", "occupation", "education level"}},
-"Medical History": {{"conditions":["list of previous medical conditions"], "medications":["list of medications"], "allergies":["list of allergies"], "surgical history":["list of surgical procedures"]}},
-"Current Symptoms": "chief complaint, duration, severity, associated symptoms",
-"Personal Details": "lifestyle habits, family dynamics, work, social history, mental health history",
-"Behavioral and Cognitive Factors": "personality traits, cognitive function, behavioral patterns",
-"Healthcare Utilization": "recent hospitalizations or emergency room visits"
-}}
-
-Only provide the card for {name} in your response. Use natural language. The features should be realistic and coherent. Let's have a complex and low-income social context, in a country with free healthcare. The patient's dialogue must be short and simple."""
-
-patient_card_json_schema = {
-    "type": "json_object",
+# Updated schema for vLLM - patient script schema 
+patient_script_json_schema = {
+    "type": "object",
     "properties": {
-        "Name": {
-        "type": "string"
-        },
+        "Name": {"type": "string"},
         "Demographics": {
-        "type": "object",
-        "properties": {
-            "age": { "type": "integer" },
-            "sex": { "type": "string" },
-            "occupation": { "type": "string" },
-            "education level": { "type": "string" }
-        },
-        "required": ["age", "sex", "occupation", "education level"]
+            "type": "object",
+            "properties": {
+                "age": {"type": "integer"},
+                "sex": {"type": "string"},
+                "occupation": {"type": "string"},
+                "education level": {"type": "string"}
+            },
+            "required": ["age", "sex", "occupation", "education level"]
         },
         "Medical History": {
-        "type": "object",
-        "properties": {
-            "conditions": {
-            "type": "array",
-            "items": { "type": "string" }
+            "type": "object",
+            "properties": {
+                "conditions": {"type": "array", "items": {"type": "string"}},
+                "medications": {"type": "array", "items": {"type": "string"}},
+                "allergies": {"type": "array", "items": {"type": "string"}},
+                "surgical history": {"type": "array", "items": {"type": "string"}}
             },
-            "medications": {
-            "type": "array",
-            "items": { "type": "string" }
-            },
-            "allergies": {
-            "type": "array",
-            "items": { "type": "string" }
-            },
-            "surgical history": {
-            "type": "array",
-            "items": { "type": "string" }
-            }
-        },
-        "required": ["conditions", "medications", "surgical history"]
+            "required": ["conditions", "medications", "allergies", "surgical history"]
         },
         "Current Symptoms": {
-        "type": "object",
-        "properties": {
-            "chief complaint": { "type": "string" },
-            "duration": { "type": "string" },
-            "severity": { "type": "string" },
-            "associated symptoms": { "type": "string" }
-        },
-        "required": ["chief complaint", "duration", "severity", "associated symptoms"]
+            "type": "object",
+            "properties": {
+                "chief complaint": {"type": "string"},
+                "duration": {"type": "string"},
+                "severity": {"type": "string"},
+                "associated symptoms": {"type": "string"}
+            },
+            "required": ["chief complaint", "duration", "severity", "associated symptoms"]
         },
         "Personal Details": {
-        "type": "object",
-        "properties": {
-            "lifestyle habits": { "type": "string" },
-            "family dynamics": { "type": "string" },
-            "work": { "type": "string" },
-            "social history": { "type": "string" },
-            "mental health history": { "type": "string" }
-        },
-        "required": ["lifestyle habits", "family dynamics", "work", "social history", "mental health history"]
+            "type": "object",
+            "properties": {
+                "lifestyle habits": {"type": "string"},
+                "family dynamics": {"type": "string"},
+                "work": {"type": "string"},
+                "social history": {"type": "string"},
+                "mental health history": {"type": "string"}
+            },
+            "required": ["lifestyle habits", "family dynamics", "work", "social history", "mental health history"]
         },
         "Behavioral and Cognitive Factors": {
-        "type": "object",
-        "properties": {
-            "personality traits": { "type": "string" },
-            "cognitive function": { "type": "string" },
-            "behavioral patterns": { "type": "string" }
-        },
-        "required": ["personality traits", "cognitive function", "behavioral patterns"]
+            "type": "object",
+            "properties": {
+                "personality traits": {"type": "string"},
+                "cognitive function": {"type": "string"},
+                "behavioral patterns": {"type": "string"}
+            },
+            "required": ["personality traits", "cognitive function", "behavioral patterns"]
         },
         "Healthcare Utilization": {
-        "type": "object",
-        "properties": {
-            "recent hospitalizations": { "type": "string" },
-            "emergency room visits": { "type": "string" }
-        },
-        "required": ["recent hospitalizations", "emergency room visits"]
+            "type": "object",
+            "properties": {
+                "recent_hospitalizations": {
+                    "type": "boolean"
+                },
+                "recent_hospitalizations_cause": {
+                    "type": "string"
+                },
+                "emergency_room_visits": {
+                    "type": "boolean"
+                },
+                "emergency_room_visits_cause": {
+                    "type": "string"
+                }
+            },
+            "required": ["recent_hospitalizations", "emergency_room_visits"],
+            "if": {
+                "properties": {
+                    "recent_hospitalizations": { "const": True }
+                }
+            },
+            "then": {
+                "required": ["recent_hospitalizations_cause"]
+            },
+            "else": {
+                "properties": {
+                    "recent_hospitalizations_cause": { "type": "null" }
+                }
+            },
+            "if": {
+                "properties": {
+                    "emergency_room_visits": { "const": True }
+                }
+            },
+            "then": {
+                "required": ["emergency_room_visits_cause"]
+            },
+            "else": {
+                "properties": {
+                    "emergency_room_visits_cause": { "type": "null" }
+                }
+            }
         }
     },
     "required": [
-        "Name", 
+        "Name",
         "Demographics", 
-        "Medical History", 
-        "Current Symptoms", 
-        "Personal Details", 
-        "Behavioral and Cognitive Factors", 
+        "Medical History",
+        "Current Symptoms",
+        "Personal Details",
+        "Behavioral and Cognitive Factors",
         "Healthcare Utilization"
     ]
 }
@@ -414,84 +457,152 @@ def dataset2sharegpt(input_file, output_file):
     with open(output_file, 'w', encoding='utf-8') as f_out:
         json.dump(all_conversations, f_out, ensure_ascii=False, indent=4)
 
-def synth_dialogue(client, prompt_dialog, script):
+def synth_dialogue(client, prompt_dialog, script, model_id):
     """
-    Synthesize a patient-doctor dialogue.
-
+    Synthesize a patient-doctor dialogue using vLLM structured output.
     Args:
         client: The OpenAI API client.
-        prompt_dialog (str): The prompt template to use for generating a dialog.
-        prompt_script (str): The prompt template to use for creating a patient script.
+        prompt_dialog (str): The prompt template for generating a dialog.
+        script (str): The patient script.
+        model_id (str): The ID of the model to use.
     
     Returns:
         dict: The synthesized patient-doctor dialogue.
     """
-    message_dialog = client.chat.completions.create(
-        messages=[
-            {
-                'role': 'user',
-                'content': prompt_dialog.format(patient_script=script)
-            }
-        ],
-        temperature=1.0,
-        response_format = dialogue_json_schema,
-        model=""
-    )
+    try:
+        message_dialog = api_call_with_retry(
+            client,
+            messages=[{'role': 'user', 'content': prompt_dialog.format(patient_script=script)}],
+            temperature=1.0,
+            response_format=dialogue_json_schema,
+            model=model_id
+        )
+        # With vLLM, the content is already parsed as JSON
+        return message_dialog.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generating dialogue: {str(e)}")
+        raise
 
-    generated_dialog=message_dialog.choices[0].message.content
-
-    return generated_dialog
-
-def synth_script(client, prompt_script):
+def synth_script(client, prompt_script, model_id):
     """
-    Synthesize a dataset of patient scripts.
-
+    Synthesize a dataset of patient scripts using vLLM structured output.
     Args:
         client: The OpenAI API client.
-        prompt_script (str): The prompt template to use for creating a patient script.
+        prompt_script (str): The prompt template for creating a patient script.
+        model_id (str): The ID of the model to use.
     
     Returns:
         str: The synthesized patient script.
     """
-    patient_script = client.chat.completions.create(
-        messages=[
-            {
-                'role': 'user',
-                'content': prompt_script
-            }
-        ],
-        temperature=1.1,
-        response_format=prompt_script,
-        model=""
-    )
+    try:
+        patient_script = api_call_with_retry(
+            client,
+            messages=[{'role': 'user', 'content': prompt_script}],
+            temperature=1.1,
+            response_format=patient_script_json_schema,
+            model=model_id
+        )
+        # With vLLM, the content is already parsed as JSON
+        return patient_script.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error generating script: {str(e)}")
+        raise
 
-    return patient_script.choices[0].message.content
+def save_batch(batch, output_file):
+    """Save a batch of dialogues to file with error handling"""
+    try:
+        with open(output_file, 'a') as f:
+            for item in batch:
+                f.write(json.dumps(item) + '\n')
+    except Exception as e:
+        logger.error(f"Error saving batch: {str(e)}")
+        # Save to backup file
+        backup_file = output_file + '.backup'
+        with open(backup_file, 'a') as f:
+            for item in batch:
+                f.write(json.dumps(item) + '\n')
+        logger.info(f"Batch saved to backup file: {backup_file}")
+
+def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> List[Dict[str, Any]]:
+    """Generate a pair of dialogues (good and inept) for a given patient case"""
+    try:
+        script = synth_script(client, prompt_script_2.format(
+            name=name, 
+            illness=illness[0],
+            symptoms=illness[1]
+        ), model_id)
+        
+        # With vLLM, no need to parse the JSON as it's already done
+        good_dialogue = synth_dialogue(client, prompt_dialog_correct, script, model_id)
+        
+        # Validate good dialogue
+        is_valid, issues = validate_medical_content({"script": script, "dialogue": good_dialogue['dialogue']})
+        if not is_valid:
+            logger.warning(f"Validation issues in good dialogue: {issues}")
+            return []
+            
+        inept_dialogue = synth_dialogue(client, prompt_dialog_incorrect, script, model_id)
+        
+        return [
+            {"script": script, "dialogue": good_dialogue['dialogue']},
+            {"script": script, "dialogue": inept_dialogue['dialogue']}
+        ]
+    except Exception as e:
+        logger.error(f"Error generating sample for {name}: {str(e)}")
+        return []
 
 if __name__ == "__main__":
-    from openai import OpenAI
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
+    parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
+    parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
+    args = parser.parse_args()
+
+    # Load config
+    config = Config(args.config)
     
     client = OpenAI(
-        base_url=args.base_url,
-        api_key='llamacpp',
-        timeout=70000
+        base_url=config.get('llm.base_url'),
+        api_key=config.get('llm.api_key'),
+        timeout=config.get('llm.timeout', 70000)
     )
-    
-    for i in range(0, args.n_samples):
-        index = i % len(argentinian_names)
-        name = random.choice(argentinian_names)
-        illness = random.choice(illneses)
-        print(f"Generating script for {name} with {illness[0]}")
-        script = synth_script(client, prompt_script_2.format(name=name, illness=illness[0],symptoms=illness[1]))
-        print(script)
-        print(f"Generating good dialogue...")
-        good_dialogue = synth_dialogue(client, prompt_dialog_correct, script)
-        print(f"Generating inept dialogue...")
-        inept_dialogue = synth_dialogue(client, prompt_dialog_incorrect, script)
-        print(good_dialogue)
-        print(inept_dialogue)
 
-        with open(args.dataset_output, 'a') as f:
-            f.write(json.dumps({"script": script, "dialogue": json.loads(good_dialogue)['dialogue']}))
-            f.write('\n')
-            f.write(json.dumps({"script": script, "dialogue": json.loads(inept_dialogue)['dialogue']}))
-            f.write('\n')
+    # Get available model from the API
+    try:
+        models_response = client.models.list()
+        model_id = models_response.data[0].id
+        logger.info(f"Using model: {model_id}")
+    except Exception as e:
+        logger.error(f"Error getting models: {str(e)}")
+        raise SystemExit("Failed to get model ID from API")
+
+    # Create output directory if needed
+    output_path = Path(args.dataset_output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Generate sample cases
+    cases = [(random.choice(argentinian_names), random.choice(illneses)) 
+            for _ in range(args.n_samples)]
+    
+    current_batch = []
+    pbar = tqdm(total=args.n_samples, desc="Generating samples")
+    
+    try:
+        with ThreadPoolExecutor(max_workers=config.get('generation.num_workers', mp.cpu_count())) as executor:
+            for samples in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id), cases):
+                if samples:
+                    current_batch.extend(samples)
+                    
+                    if len(current_batch) >= config.get('generation.batch_size', 10):
+                        save_batch(current_batch, args.dataset_output)
+                        current_batch = []
+                        
+                    pbar.update(1)
+                    
+    except KeyboardInterrupt:
+        logger.warning("Generation interrupted by user")
+    finally:
+        if current_batch:
+            save_batch(current_batch, args.dataset_output)
+        pbar.close()
+        logger.info("Generation complete")
