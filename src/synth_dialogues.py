@@ -55,6 +55,7 @@ args = parser.parse_args()
 
 ### DIALOG PROMPT AND SCHEMA
 prompt_dialog_correct = """Generate a natural conversation in Argentinian Spanish between a doctor and a patient based on the following patient script: {patient_script}. The patient should not reveal all the information at once, and the conversation should reflect the doctor's active listening, clarity, respect, reassurance, patient-centered care, clear communication, encouragement, confidentiality, and effective time management. The doctor should NOT perform any actions, just talk.
+The doctor should NOT perform any actions, just talk.
 Only provide the spoken dialogue, without any additional explanation, performance or translation.
 """
 
