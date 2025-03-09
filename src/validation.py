@@ -6,7 +6,8 @@ This is used to validate outputs both during training and inference.
 
 import json
 import logging
-from typing import Dict, List, Optional, Union, Any
+import re
+from typing import Dict, List, Optional, Union, Any, Tuple
 import argparse
 from pathlib import Path
 
@@ -17,6 +18,88 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import evaluate
 
 logger = logging.getLogger(__name__)
+
+# Add the missing function that synth_dialogues.py is trying to import
+def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
+    """
+    Validates medical content in a dialogue for accuracy and consistency.
+    
+    Args:
+        dialogue_data: Dictionary containing script and dialogue
+        
+    Returns:
+        Tuple containing validation status (bool) and list of issues (if any)
+    """
+    issues = []
+    script = dialogue_data.get("script", "")
+    dialogue = dialogue_data.get("dialogue", [])
+    
+    # Check if dialogue exists and has turns
+    if not dialogue:
+        issues.append("Dialogue is empty")
+        return False, issues
+    
+    # Ensure alternating doctor-patient turns
+    last_role = None
+    for i, turn in enumerate(dialogue):
+        current_role = turn.get("role", "")
+        
+        # Skip first turn check
+        if i > 0 and current_role == last_role:
+            issues.append(f"Non-alternating turns detected at position {i}")
+        
+        last_role = current_role
+    
+    # Check for consistency with patient script
+    script_str = json.dumps(script) if isinstance(script, dict) else str(script)
+    dialogue_str = " ".join([turn.get("content", "") for turn in dialogue])
+    
+    # Extract key medical terms from script
+    key_terms = set()
+    
+    # Look for medical conditions in script
+    if isinstance(script, dict):
+        # Extract medical conditions from structured script
+        if "Medical History" in script and "conditions" in script["Medical History"]:
+            key_terms.update(script["Medical History"]["conditions"])
+        
+        # Extract current symptoms
+        if "Current Symptoms" in script:
+            symptoms = script["Current Symptoms"]
+            if isinstance(symptoms, dict):
+                if "chief complaint" in symptoms:
+                    key_terms.add(symptoms["chief complaint"])
+                if "associated symptoms" in symptoms:
+                    key_terms.update(re.findall(r'[\w\s]+(?:,|$)', symptoms["associated symptoms"]))
+            elif isinstance(symptoms, str):
+                key_terms.update(re.findall(r'[\w\s]+(?:,|$)', symptoms))
+    else:
+        # Try to extract from string script
+        conditions_match = re.search(r'"conditions":\s*\[(.*?)\]', script_str)
+        if conditions_match:
+            conditions_str = conditions_match.group(1)
+            key_terms.update(re.findall(r'"([^"]+)"', conditions_str))
+        
+        symptoms_match = re.search(r'"Current Symptoms".*?:.*?(?:"|\{)(.*?)(?:"|,\s*"|\})', script_str, re.DOTALL)
+        if symptoms_match:
+            symptoms_str = symptoms_match.group(1)
+            key_terms.update(re.findall(r'(?:complaint|symptoms):\s*"([^"]+)"', symptoms_str))
+    
+    # Check if at least some key medical terms are mentioned in the dialogue
+    mentioned_terms = 0
+    for term in key_terms:
+        if term.lower() in dialogue_str.lower():
+            mentioned_terms += 1
+    
+    if mentioned_terms < min(2, len(key_terms)):
+        issues.append("Dialogue doesn't sufficiently reference patient's medical conditions")
+    
+    # Check for dialogue length
+    if len(dialogue) < 6:
+        issues.append("Dialogue is too short (fewer than 6 turns)")
+    
+    # Return validation result
+    return len(issues) == 0, issues
 
 
 class PatientResponseValidator:

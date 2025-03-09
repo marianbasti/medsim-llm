@@ -11,7 +11,7 @@ accelerate
 datasets
 huggingface_hub
 peft
-sentencepiec
+sentencepiece
 bitsandbytes
 evaluate
 scikit-learn
