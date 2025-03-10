@@ -43,7 +43,6 @@ def api_call_with_retry(client, messages, temperature, response_format, model):
     )
 
 parser = argparse.ArgumentParser()
-
 # Add arguments
 parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
 parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
@@ -52,19 +51,10 @@ parser.add_argument("--base_url", type=str, default='http://localhost:7000/v1/',
 # Parse arguments
 args = parser.parse_args()
 
-
 ### DIALOG PROMPT AND SCHEMA
-prompt_dialog_correct = """Generate a natural conversation in Argentinian Spanish between a doctor and a patient based on the following patient script: {patient_script}. The patient should not reveal all the information at once, and the conversation should reflect the doctor's active listening, clarity, respect, reassurance, patient-centered care, clear communication, encouragement, confidentiality, and effective time management. The doctor should NOT perform any actions, just talk.
+prompt_dialog = """Generate a natural conversation in Argentinian Spanish between a doctor and a patient based on the following patient script: {patient_script}. The patient should not reveal all the information at once, and the conversation should reflect the doctor's active listening, clarity, respect, reassurance, patient-centered care, clear communication, encouragement, confidentiality, and effective time management. The doctor should NOT perform any actions, just talk.
 The doctor should NOT perform any actions, just talk.
 Only provide the spoken dialogue, without any additional explanation, performance or translation.
-"""
-
-prompt_dialog_incorrect = """Generate a natural conversation in Argentinian Spanish between a doctor and a patient based on the following patient script: {patient_script}. The patient should not reveal all the information at once. The conversation should reflect the doctor's ineptitude in communication, including some of these behaviors:
-Using excessive medical jargon without explanation, showing impatience or rushing the conversation, failing to address the patient's concerns, minimizing the patient's symptoms, lacking empathy or emotional support, jumping to conclusions without gathering all necessary information
-
-The doctor should NOT perform any actions, just talk.
-Only provide the spoken dialogue, without any additional explanation, performance or translation.
-
 """
 
 # Updated schema for vLLM - dialogue schema
@@ -204,6 +194,7 @@ patient_script_json_schema = {
     ]
 }
 
+# ... (keeping argentinian_names and illneses lists unchanged)
 argentinian_names = [
     "Juan Pérez",
     "María González",
@@ -346,73 +337,6 @@ def lmflow_training_format(data):
     # We add transformed data as the "instances key" to a json
     return {"type":"text_only","instances": transformed_data}
 
-# Transform the data to train with MS-Swift
-# LEGACY
-#def sharegpt_training_format(input_file, output_file):
-#    result = []#
-#
-#    with open(input_file, 'r', encoding='utf-8') as f:
-#        for line_number, line in enumerate(f, 1):
-#            conversation = json.loads(line)
-#
-#            formatted_conversation = [
-#                {
-#                    "from": "system",
-#                    "value": conversation['script']
-#                }
-#            ]
-#            
-#            dialogue = conversation['dialogue'].replace("**", "")
-#            dialogue = re.sub(r'\b(doctor|Doctor)\b\n', r'user\n', dialogue)
-#            dialogue = re.sub(r'\b(patient|paciente|Patient|Paciente)\b\n', r'assistant\n', dialogue)
-#            turns = re.split(r'<start_of_turn>|<end_of_turn>', dialogue)
-#            
-#            last_speaker = None
-#            for turn in turns:
-#                turn = turn.strip()
-#                if turn:
-#                    parts = turn.split('\n', 1)
-#                    if len(parts) == 2:
-#                        speaker, message = parts
-#                    else:
-#                        speaker = formatted_conversation[-1]['from'] if formatted_conversation else 'unknown'
-#                        message = parts[0]
-#                    
-#                    speaker = speaker.strip()
-#                    message = message.strip()
-#                    
-#                    if formatted_conversation and formatted_conversation[-1]['from'] == speaker:
-#                        formatted_conversation[-1]['value'] += " " + message
-#                    else:
-#                        formatted_conversation.append({
-#                            "from": speaker,
-#                           "value": message
-#                        })
-#            
-#            # Remove the last message if it's from the user
-#            if formatted_conversation[-1]['from'].lower() == 'user':
-#                formatted_conversation.pop()
-#           
-#            # Ensure the last message is from the assistant
-#            if formatted_conversation[-1]['from'].lower() != 'assistant':
-#                formatted_conversation.pop()
-#            
-#            # Only add the conversation if it has at least one message after the system message
-#            if len(formatted_conversation) > 1:
-#                # Generate a unique ID for this conversation
-#                unique_id = f"conv_{line_number}"
-#                
-#                # Add this conversation to the result with its unique ID
-#                result.append({
-#                    "id": unique_id,
-#                    "conversations": formatted_conversation
-#                })
-#    
-#    with open(output_file, 'w', encoding='utf-8') as f:
-#       json.dump(result, f, ensure_ascii=False, indent=2)
-#
-#    print(f"Conversion complete. Output saved to {output_file}")
-
 def dataset2sharegpt(input_file, output_file):
     all_conversations = {"conversations": []}
     
@@ -436,7 +360,6 @@ def dataset2sharegpt(input_file, output_file):
                 if message['role'] != last_role:  # Enforce alternating roles
                     filtered_dialogue.append(message)
                     last_role = message['role']
-
             # Remove last message if it's from "doctor"
             if filtered_dialogue and filtered_dialogue[-1]['role'] == "doctor":
                 filtered_dialogue.pop()
@@ -524,8 +447,8 @@ def save_batch(batch, output_file):
                 f.write(json.dumps(item) + '\n')
         logger.info(f"Batch saved to backup file: {backup_file}")
 
-def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> List[Dict[str, Any]]:
-    """Generate a pair of dialogues (good and inept) for a given patient case"""
+def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> Dict[str, Any]:
+    """Generate a dialogue for a given patient case"""
     try:
         script = synth_script(client, prompt_script_2.format(
             name=name, 
@@ -533,24 +456,19 @@ def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) 
             symptoms=illness[1]
         ), model_id)
         
-        # With vLLM, no need to parse the JSON as it's already done
-        good_dialogue = synth_dialogue(client, prompt_dialog_correct, script, model_id)
+        # Generate dialogue
+        dialogue = synth_dialogue(client, prompt_dialog, script, model_id)
         
-        # Validate good dialogue
-        is_valid, issues = validate_medical_content({"script": script, "dialogue": good_dialogue['dialogue']})
+        # Validate dialogue
+        is_valid, issues = validate_medical_content({"script": script, "dialogue": dialogue['dialogue']})
         if not is_valid:
-            logger.warning(f"Validation issues in good dialogue: {issues}")
-            return []
+            logger.warning(f"Validation issues in dialogue: {issues}")
+            return None
             
-        inept_dialogue = synth_dialogue(client, prompt_dialog_incorrect, script, model_id)
-        
-        return [
-            {"script": script, "dialogue": good_dialogue['dialogue']},
-            {"script": script, "dialogue": inept_dialogue['dialogue']}
-        ]
+        return {"script": script, "dialogue": dialogue['dialogue']}
     except Exception as e:
         logger.error(f"Error generating sample for {name}: {str(e)}")
-        return []
+        return None
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -558,7 +476,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
     args = parser.parse_args()
-
+    
     # Load config
     config = Config(args.config)
     
@@ -567,7 +485,7 @@ if __name__ == "__main__":
         api_key=config.get('llm.api_key'),
         timeout=config.get('llm.timeout', 70000)
     )
-
+    
     # Get available model from the API
     try:
         models_response = client.models.list()
@@ -576,7 +494,7 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Error getting models: {str(e)}")
         raise SystemExit("Failed to get model ID from API")
-
+        
     # Create output directory if needed
     output_path = Path(args.dataset_output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -590,9 +508,9 @@ if __name__ == "__main__":
     
     try:
         with ThreadPoolExecutor(max_workers=config.get('generation.num_workers', mp.cpu_count())) as executor:
-            for samples in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id), cases):
-                if samples:
-                    current_batch.extend(samples)
+            for sample in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id), cases):
+                if sample:
+                    current_batch.append(sample)
                     
                     if len(current_batch) >= config.get('generation.batch_size', 10):
                         save_batch(current_batch, args.dataset_output)
