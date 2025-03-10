@@ -401,8 +401,22 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
             response_format=dialogue_json_schema,
             model=model_id
         )
-        # With vLLM, the content is already parsed as JSON
-        return message_dialog.choices[0].message.content
+        
+        # Get content from the response
+        content = message_dialog.choices[0].message.content
+        
+        # Check if content is already a dict or if it needs parsing
+        if isinstance(content, str):
+            try:
+                # Try to parse it as JSON
+                return json.loads(content)
+            except json.JSONDecodeError:
+                # If it can't be parsed, wrap it in a proper structure
+                logger.warning("Received non-JSON response, attempting to format it")
+                return {"dialogue": [{"role": "doctor", "content": content}]}
+        else:
+            # Content is already a dictionary
+            return content
     except Exception as e:
         logger.error(f"Error generating dialogue: {str(e)}")
         raise
