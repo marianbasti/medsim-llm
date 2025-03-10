@@ -37,7 +37,7 @@ from config import load_config
 
 # Configure logging
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
     level=logging.INFO,
@@ -86,7 +86,8 @@ class PatientRoleplayEvaluator:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         
         # Load model
-        logger.info(f"Loading model from {args.model_path or args.base_model}")
+        model_source = args.model_path or args.base_model
+        logger.info(f"Loading model from {model_source}")
         
         # Use quantization if specified
         if args.use_4bit:
@@ -96,16 +97,19 @@ class PatientRoleplayEvaluator:
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
             )
+            logger.info("Using 4-bit quantization for efficient inference")
         else:
             bnb_config = None
         
         # Load the base or fine-tuned model
+        start_time = time.time()
         self.model = AutoModelForCausalLM.from_pretrained(
-            args.model_path or args.base_model,
+            model_source,
             quantization_config=bnb_config,
             device_map="auto",
             torch_dtype=torch.float16,
         )
+        logger.info(f"Model loaded successfully in {time.time() - start_time:.2f} seconds")
         
         # Set up generation config
         self.generation_config = GenerationConfig(
@@ -119,6 +123,7 @@ class PatientRoleplayEvaluator:
         )
         
         # Load metrics
+        logger.info("Loading evaluation metrics")
         self.rouge = evaluate.load("rouge")
         self.bertscore = evaluate.load("bertscore")
         self.sentence_transformer = transformers.AutoModel.from_pretrained(
@@ -141,6 +146,9 @@ class PatientRoleplayEvaluator:
         # Sample a subset if required
         if self.args.num_samples > 0 and self.args.num_samples < len(data):
             data = random.sample(data, self.args.num_samples)
+            logger.info(f"Sampled {len(data)} examples for evaluation")
+        else:
+            logger.info(f"Using all {len(data)} examples for evaluation")
         
         # Process the data
         test_samples = []
@@ -185,16 +193,16 @@ class PatientRoleplayEvaluator:
                     "doctor_turn": doc_turn,
                 })
         
-        logger.info(f"Loaded {len(test_samples)} test samples")
+        logger.info(f"Created {len(test_samples)} test samples for evaluation")
         return test_samples
     
     def generate_responses(self, test_samples):
         """Generate responses for test samples."""
-        logger.info("Generating responses")
+        logger.info(f"Generating responses for {len(test_samples)} test samples")
         
         results = []
         
-        for sample in tqdm(test_samples, desc="Generating responses"):
+        for i, sample in enumerate(tqdm(test_samples, desc="Generating responses")):
             # Prepare input
             if sample["history"] is None:
                 # No history, just use the prompt
@@ -236,18 +244,23 @@ class PatientRoleplayEvaluator:
                 "reference": sample["reference"],
                 "history": sample["history"],
             })
+            
+            # Log progress occasionally
+            if (i+1) % 10 == 0:
+                logger.debug(f"Generated {i+1}/{len(test_samples)} responses")
         
         return results
     
     def evaluate_responses(self, results):
         """Evaluate the generated responses."""
-        logger.info("Evaluating responses")
+        logger.info("Evaluating model responses")
         
         # Prepare for metrics calculation
         generated_texts = [result["generated"] for result in results]
         reference_texts = [result["reference"] for result in results]
         
         # Calculate ROUGE scores
+        logger.info("Calculating ROUGE scores")
         rouge_scores = self.rouge.compute(
             predictions=generated_texts,
             references=reference_texts,
@@ -255,6 +268,7 @@ class PatientRoleplayEvaluator:
         )
         
         # Calculate BERTScore (semantic similarity)
+        logger.info("Calculating BERTScore (semantic similarity)")
         bert_scores = self.bertscore.compute(
             predictions=generated_texts,
             references=reference_texts,
@@ -278,10 +292,13 @@ class PatientRoleplayEvaluator:
             "bert_f1": avg_bert_f1,
         }
         
+        logger.info(f"ROUGE-1: {metrics['rouge1']:.4f}, ROUGE-L: {metrics['rougeL']:.4f}, BERTScore F1: {avg_bert_f1:.4f}")
+        
         return metrics, results
     
     def calculate_role_consistency(self, results):
         """Calculate how consistently the model stays in its patient role."""
+        logger.info("Calculating role consistency")
         
         consistency_scores = []
         
@@ -301,6 +318,12 @@ class PatientRoleplayEvaluator:
             consistency_scores.append(is_proper_patient)
         
         avg_consistency = sum(consistency_scores) / len(consistency_scores)
+        logger.info(f"Role consistency score: {avg_consistency:.4f}")
+        
+        # Count examples that maintained proper role
+        consistent_count = sum(1 for score in consistency_scores if score > 0.5)
+        total_count = len(consistency_scores)
+        logger.info(f"{consistent_count} out of {total_count} examples maintained proper patient role ({(consistent_count/total_count)*100:.1f}%)")
         
         return avg_consistency, consistency_scores
     
@@ -340,6 +363,8 @@ class PatientRoleplayEvaluator:
     
     def run_evaluation(self):
         """Run the full evaluation pipeline."""
+        start_time = time.time()
+        
         # Load test data
         test_samples = self.load_test_data()
         
@@ -355,9 +380,13 @@ class PatientRoleplayEvaluator:
         # Save results
         self.save_results(metrics, results, role_consistency_score, consistency_scores)
         
-        logger.info(f"Evaluation completed with role consistency: {role_consistency_score:.4f}")
-        for metric_name, metric_value in metrics.items():
-            logger.info(f"{metric_name}: {metric_value:.4f}")
+        # Log summary metrics
+        logger.info(f"Evaluation completed in {time.time() - start_time:.2f} seconds")
+        logger.info(f"Role consistency: {role_consistency_score:.4f}")
+        logger.info(f"ROUGE-1: {metrics['rouge1']:.4f}")
+        logger.info(f"ROUGE-2: {metrics['rouge2']:.4f}")
+        logger.info(f"ROUGE-L: {metrics['rougeL']:.4f}")
+        logger.info(f"BERTScore F1: {metrics['bert_f1']:.4f}")
 
 
 def main():
@@ -377,12 +406,19 @@ def main():
     parser.add_argument("--use_4bit", action="store_true", help="Use 4-bit quantization")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--num_samples", type=int, default=-1, help="Number of samples to evaluate (-1 for all)")
+    parser.add_argument("--log_level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Set logging level")
     
     args = parser.parse_args()
-    args = EvalArguments(**vars(args))
+    
+    # Set logging level
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    logger.info(f"Starting evaluation with log level: {args.log_level}")
+    
+    # Convert namespace to EvalArguments
+    eval_args = EvalArguments(**vars(args))
     
     # Run evaluation
-    evaluator = PatientRoleplayEvaluator(args)
+    evaluator = PatientRoleplayEvaluator(eval_args)
     evaluator.run_evaluation()
 
 

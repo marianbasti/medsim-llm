@@ -10,11 +10,16 @@ import numpy as np
 from collections import Counter
 from config import Config
 
-# Setup logging
+# Setup logging with more informative format
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler('evaluation.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
+logger = logging.getLogger(__name__)
 
 evaluation_prompt = """Evaluate the conversation between the patient and doctor based on the provided patient character card and conversation history. Assess the patient's responses according to the following criteria: character consistency, character recall, conversational coherence, and realism. Provide a score for each criterion on a scale of 0 to 1, where 1 represents perfect performance. Take special importance into the coherence between the symptomps and dialogue.
 **Character card:**
@@ -90,7 +95,7 @@ def evaluate(client: OpenAI, dialogue: Dict[str, Any], evaluation_prompt: str) -
         )
         return json.loads(evaluation.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Error during evaluation: {str(e)}")
+        logger.error(f"Error during evaluation: {str(e)}")
         return None
 
 def process_dialogue_file(input_path: str, client: OpenAI, evaluation_prompt: str) -> None:
@@ -102,13 +107,18 @@ def process_dialogue_file(input_path: str, client: OpenAI, evaluation_prompt: st
         client: OpenAI client instance
         evaluation_prompt: Template for the evaluation prompt
     """
+    logger.info(f"Starting evaluation of dialogues from: {input_path}")
     try:
         with open(input_path, 'r') as f:
             lines = [line for line in f]
+            total_dialogues = len(lines)
+            logger.info(f"Found {total_dialogues} dialogues to evaluate")
+            
             f.seek(0)
             results = []
-            pbar = tqdm.tqdm(f, total=len(lines), desc="Evaluating dialogues")
+            pbar = tqdm.tqdm(f, total=total_dialogues, desc="Evaluating dialogues")
             
+            evaluation_failures = 0
             for i, line in enumerate(pbar):
                 try:
                     dialogue = json.loads(line)
@@ -118,13 +128,25 @@ def process_dialogue_file(input_path: str, client: OpenAI, evaluation_prompt: st
                             'dialogue_id': i,
                             'evaluation': result
                         })
-                        pbar.write(f"Dialogue {i} - Scores: {result}")
+                        
+                        # Log meaningful evaluation metrics
+                        scores = [
+                            result["character_consistency"]["score"],
+                            result["character_recall"]["score"],
+                            result["conversational_coherence"]["score"],
+                            result["realism"]["score"]
+                        ]
+                        avg_score = sum(scores) / len(scores)
+                        
+                        if i % 10 == 0:  # Log every 10 dialogues to avoid excessive logging
+                            pbar.write(f"Dialogue {i} - Avg score: {avg_score:.2f} - Consistency: {scores[0]:.2f}, Recall: {scores[1]:.2f}, Coherence: {scores[2]:.2f}, Realism: {scores[3]:.2f}")
                     else:
+                        evaluation_failures += 1
                         pbar.write(f"Failed to evaluate dialogue {i}")
                 except json.JSONDecodeError:
-                    logging.error(f"Error parsing dialogue {i}")
+                    logger.error(f"Error parsing dialogue {i} - Invalid JSON")
                 except Exception as e:
-                    logging.error(f"Error processing dialogue {i}: {str(e)}")
+                    logger.error(f"Error processing dialogue {i}: {str(e)}")
             
             # Save results
             output_path = input_path.replace('.jsonl', '_evaluated.jsonl')
@@ -132,13 +154,15 @@ def process_dialogue_file(input_path: str, client: OpenAI, evaluation_prompt: st
                 for result in results:
                     f.write(json.dumps(result) + '\n')
             
-            logging.info(f"Evaluation complete. Results saved to {output_path}")
+            success_rate = ((total_dialogues - evaluation_failures) / total_dialogues) * 100 if total_dialogues > 0 else 0
+            logger.info(f"Evaluation complete. {len(results)} dialogues evaluated successfully ({success_rate:.1f}%).")
+            logger.info(f"Results saved to {output_path}")
                     
     except FileNotFoundError:
-        logging.error(f"Input file not found: {input_path}")
+        logger.error(f"Input file not found: {input_path}")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error during evaluation: {str(e)}")
         sys.exit(1)
 
 def evaluate_dialogue(dialogue: Dict) -> Dict[str, float]:
@@ -224,13 +248,22 @@ def batch_evaluate(dialogues: List[Dict]) -> List[Dict[str, float]]:
     return [evaluate_dialogue(d) for d in dialogues]
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Evaluate doctor-patient dialogues")
     parser.add_argument("--dataset_input", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.jsonl', help="Path to dialogue dataset to evaluate")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
+    parser.add_argument("--log_level", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
+                       default='INFO', help="Set the logging level")
     args = parser.parse_args()
 
+    # Set log level from command line
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    logger.info(f"Starting dialogue evaluation with log level: {args.log_level}")
+
     try:
+        logger.info(f"Loading configuration from {args.config}")
         config = Config(args.config)
+        
+        logger.info("Initializing OpenAI client")
         client = OpenAI(
             base_url=config.get('llm.base_url'),
             api_key=config.get('llm.api_key'),
@@ -238,5 +271,5 @@ if __name__ == "__main__":
         )
         process_dialogue_file(args.dataset_input, client, evaluation_prompt)
     except Exception as e:
-        logging.error(f"Fatal error: {str(e)}")
+        logger.error(f"Fatal error: {str(e)}")
         sys.exit(1)

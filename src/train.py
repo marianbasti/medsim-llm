@@ -32,9 +32,9 @@ import yaml
 
 from config import load_config
 
-# Configure logging
+# Configure logging with more informative format
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
     level=logging.INFO,
@@ -104,6 +104,7 @@ def create_patient_dataset(
     # Prepare the conversation format for training
     processed_samples = []
     
+    logger.info(f"Processing {len(data)} dialogue samples")
     for sample in data:
         script = sample["script"]
         dialogue = sample["dialogue"]
@@ -140,6 +141,7 @@ def create_patient_dataset(
     
     # Convert to Dataset
     dataset = Dataset.from_list(processed_samples)
+    logger.info(f"Created dataset with {len(dataset)} training examples")
     
     # Tokenize function
     def tokenize_function(examples):
@@ -189,27 +191,28 @@ def create_patient_dataset(
         }
     
     # Tokenize the dataset
+    logger.info("Tokenizing dataset...")
     tokenized_dataset = dataset.map(
         tokenize_function,
         batched=True,
         remove_columns=dataset.column_names,
         desc="Tokenizing dataset",
+        num_proc=os.cpu_count() // 2,  # Use half the available CPUs
     )
     
     # Split into train and validation datasets
     if validation_split > 0:
+        logger.info(f"Splitting dataset with validation ratio: {validation_split}")
         tokenized_dataset = tokenized_dataset.train_test_split(
             test_size=validation_split, seed=seed
         )
         train_dataset = tokenized_dataset["train"]
         eval_dataset = tokenized_dataset["test"]
+        logger.info(f"Split complete - Training: {len(train_dataset)} examples, Validation: {len(eval_dataset)} examples")
     else:
         train_dataset = tokenized_dataset
         eval_dataset = None
-    
-    logger.info(f"Created train dataset with {len(train_dataset)} samples")
-    if eval_dataset:
-        logger.info(f"Created validation dataset with {len(eval_dataset)} samples")
+        logger.info(f"No validation split - Using all {len(train_dataset)} examples for training")
     
     return train_dataset, eval_dataset
 
@@ -222,10 +225,16 @@ def main():
     # Load config
     config = load_config()
     
+    # Setup logging for the transformers library
+    transformers.utils.logging.set_verbosity_info()
+    transformers.utils.logging.enable_default_handler()
+    
     # Set seed
     set_seed(training_args.seed)
+    logger.info(f"Training with random seed: {training_args.seed}")
     
     # Load tokenizer
+    logger.info(f"Loading tokenizer: {model_args.model_name_or_path}")
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         padding_side="right",  # For generation tasks, pad on right
@@ -238,7 +247,8 @@ def main():
     
     # Load model with quantization if specified
     if model_args.use_4bit:
-        compute_dtype = getattr(torch, peft_args.bnb_4bit_compute_dtype)
+        logger.info("Using 4-bit quantization for training")
+        compute_dtype = getattr(torch, model_args.bnb_4bit_compute_dtype)
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=model_args.use_4bit,
             bnb_4bit_quant_type=model_args.bnb_4bit_quant_type,
@@ -254,6 +264,7 @@ def main():
     }
     
     if model_args.use_flash_attention:
+        logger.info("Using Flash Attention 2.0")
         kwargs["attn_implementation"] = "flash_attention_2"
     
     # Load base model
@@ -267,7 +278,7 @@ def main():
     
     # Prepare the model for training with PEFT if specified
     if peft_args.use_peft:
-        logger.info("Preparing model for PEFT training")
+        logger.info("Setting up Parameter-Efficient Fine-Tuning (PEFT)")
         model = prepare_model_for_kbit_training(model)
         
         # Parse target modules
@@ -277,7 +288,7 @@ def main():
             target_modules = peft_args.target_modules.split(",") if peft_args.target_modules else None
         
         # Configure PEFT (LoRA)
-        logger.info(f"Setting up LoRA with r={peft_args.lora_r}, alpha={peft_args.lora_alpha}")
+        logger.info(f"LoRA configuration: r={peft_args.lora_r}, alpha={peft_args.lora_alpha}, dropout={peft_args.lora_dropout}")
         peft_config = LoraConfig(
             r=peft_args.lora_r,
             lora_alpha=peft_args.lora_alpha,
@@ -289,10 +300,12 @@ def main():
         
         # Get PEFT model
         model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
+        
+        # Log trainable parameters
+        trainable_params, all_params = model.get_nb_trainable_parameters()
+        logger.info(f"Trainable parameters: {trainable_params:,d} ({trainable_params / all_params:.2%} of {all_params:,d} total parameters)")
     
     # Create the dataset
-    logger.info("Creating dataset")
     train_dataset, eval_dataset = create_patient_dataset(
         data_args.train_file, 
         tokenizer=tokenizer,
@@ -302,6 +315,7 @@ def main():
     )
     
     # Initialize trainer
+    logger.info("Initializing Trainer")
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -312,11 +326,14 @@ def main():
     )
     
     # Start training
-    logger.info("Starting training")
+    logger.info(f"Starting training with batch size: {training_args.per_device_train_batch_size}, gradient accumulation: {training_args.gradient_accumulation_steps}")
+    logger.info(f"Using learning rate: {training_args.learning_rate}, weight decay: {training_args.weight_decay}")
+    logger.info(f"Training will save checkpoints to: {training_args.output_dir}")
+    
     train_result = trainer.train()
     
     # Save model
-    logger.info(f"Saving model to {training_args.output_dir}")
+    logger.info(f"Training complete! Saving model to {training_args.output_dir}")
     trainer.save_model()
     
     # Save tokenizer
@@ -329,10 +346,11 @@ def main():
     
     # Run evaluation if validation dataset exists
     if eval_dataset:
-        logger.info("Running evaluation")
+        logger.info("Running final evaluation")
         eval_metrics = trainer.evaluate()
         trainer.log_metrics("eval", eval_metrics)
         trainer.save_metrics("eval", eval_metrics)
+        logger.info(f"Evaluation results: {eval_metrics}")
     
     logger.info("Training completed successfully!")
 

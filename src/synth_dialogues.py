@@ -11,10 +11,10 @@ from typing import List, Dict, Any, Tuple
 from openai import OpenAI
 from config import Config
 
-# Configure logging with debug level
+# Configure logging with more informative format
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed from INFO to DEBUG
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',  # Added module name to format
+    level=logging.INFO,  # Default to INFO level
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
         logging.FileHandler('dialogue_generation.log'),
         logging.StreamHandler()
@@ -34,7 +34,7 @@ def api_call_with_retry(client, messages, temperature, response_format, model):
     if not model:
         raise ValueError("Model ID is required")
     
-    logger.debug(f"Making API call to model: {model} with temperature: {temperature}")
+    logger.debug(f"API call to model: {model}")
     return client.chat.completions.create(
         model=model,
         messages=messages,
@@ -340,8 +340,12 @@ def lmflow_training_format(data):
 def dataset2sharegpt(input_file, output_file):
     all_conversations = {"conversations": []}
     
+    logger.info(f"Converting data from {input_file} to ShareGPT format")
     with open(input_file, 'r', encoding='utf-8') as f_in:
-        for line in f_in:
+        lines = [line for line in f_in]
+        conversation_count = 0
+        
+        for line in tqdm(lines, desc="Converting to ShareGPT"):
             data = json.loads(line)
             
             # Create a new conversation with the 'script' as the first message from "system"
@@ -376,10 +380,13 @@ def dataset2sharegpt(input_file, output_file):
                 all_conversations['conversations'].append(
                     new_conversation
                 )
+                conversation_count += 1
         
     # Write the final aggregated data to the output JSON file
     with open(output_file, 'w', encoding='utf-8') as f_out:
         json.dump(all_conversations, f_out, ensure_ascii=False, indent=4)
+    
+    logger.info(f"Conversion complete. {conversation_count} conversations saved to {output_file}")
 
 def synth_dialogue(client, prompt_dialog, script, model_id):
     """
@@ -394,7 +401,6 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         dict: The synthesized patient-doctor dialogue.
     """
     try:
-        logger.debug(f"Generating dialogue with model: {model_id}")
         message_dialog = api_call_with_retry(
             client,
             messages=[{'role': 'user', 'content': prompt_dialog.format(patient_script=script)}],
@@ -405,22 +411,19 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         
         # Get content from the response
         content = message_dialog.choices[0].message.content
-        logger.debug(f"Received dialogue response type: {type(content)}")
         
         # Check if content is already a dict or if it needs parsing
         if isinstance(content, str):
             try:
                 # Try to parse it as JSON
                 parsed_content = json.loads(content)
-                logger.debug("Successfully parsed string response as JSON")
                 return parsed_content
             except json.JSONDecodeError:
                 # If it can't be parsed, wrap it in a proper structure
-                logger.warning("Received non-JSON response, attempting to format it")
+                logger.warning("Received non-JSON response from model, attempting to format it")
                 return {"dialogue": [{"role": "doctor", "content": content}]}
         else:
             # Content is already a dictionary
-            logger.debug("Response was already in dictionary format")
             return content
     except Exception as e:
         logger.error(f"Error generating dialogue: {str(e)}")
@@ -438,7 +441,6 @@ def synth_script(client, prompt_script, model_id):
         str: The synthesized patient script.
     """
     try:
-        logger.debug(f"Generating patient script with model: {model_id}")
         patient_script = api_call_with_retry(
             client,
             messages=[{'role': 'user', 'content': prompt_script}],
@@ -447,25 +449,23 @@ def synth_script(client, prompt_script, model_id):
             model=model_id
         )
         # With vLLM, the content is already parsed as JSON
-        content = patient_script.choices[0].message.content
-        logger.debug(f"Received script response type: {type(content)}")
-        return content
+        return patient_script.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error generating script: {str(e)}")
+        logger.error(f"Error generating patient script: {str(e)}")
         raise
 
 def save_batch(batch, output_file):
     """Save a batch of dialogues to file with error handling"""
     try:
-        logger.debug(f"Saving batch of {len(batch)} samples to {output_file}")
         with open(output_file, 'a') as f:
             for item in batch:
                 f.write(json.dumps(item) + '\n')
+        logger.info(f"Saved batch of {len(batch)} samples")
     except Exception as e:
         logger.error(f"Error saving batch: {str(e)}")
         # Save to backup file
         backup_file = output_file + '.backup'
-        logger.debug(f"Attempting to save to backup file: {backup_file}")
+        logger.warning(f"Attempting to save to backup file: {backup_file}")
         with open(backup_file, 'a') as f:
             for item in batch:
                 f.write(json.dumps(item) + '\n')
@@ -474,7 +474,6 @@ def save_batch(batch, output_file):
 def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> Dict[str, Any]:
     """Generate a dialogue for a given patient case"""
     try:
-        logger.debug(f"Generating sample for patient: {name} with illness: {illness[0]}")
         script = synth_script(client, prompt_script_2.format(
             name=name, 
             illness=illness[0],
@@ -484,11 +483,9 @@ def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) 
         # Generate dialogue
         dialogue = synth_dialogue(client, prompt_dialog, script, model_id)
         
-        # No validation needed as JSON schema ensures correct format
-        logger.debug("Sample generated successfully")
         return {"script": script, "dialogue": dialogue['dialogue']}
     except Exception as e:
-        logger.error(f"Error generating sample for {name}: {str(e)}")
+        logger.error(f"Error generating sample for {name} with {illness[0]}: {str(e)}")
         return None
 
 if __name__ == "__main__":
@@ -496,8 +493,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
     parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
-    # Add debug level argument
-    parser.add_argument("--log_level", type=str, default="DEBUG", 
+    parser.add_argument("--log_level", type=str, default="INFO", 
                       choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                       help="Set the logging level")
     
@@ -505,11 +501,10 @@ if __name__ == "__main__":
     
     # Set logging level from command line
     logging.getLogger().setLevel(getattr(logging, args.log_level))
-    logger.debug(f"Logging level set to {args.log_level}")
     
     # Load config
     config = Config(args.config)
-    logger.debug(f"Config loaded from: {args.config}")
+    logger.info(f"Loaded configuration from: {args.config}")
     
     client = OpenAI(
         base_url=config.get('llm.base_url'),
@@ -531,19 +526,24 @@ if __name__ == "__main__":
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Generate sample cases
+    logger.info(f"Generating {args.n_samples} dialogue samples")
     cases = [(random.choice(argentinian_names), random.choice(illneses)) 
             for _ in range(args.n_samples)]
     
     current_batch = []
+    batch_size = config.get('generation.batch_size', 10)
     pbar = tqdm(total=args.n_samples, desc="Generating samples")
     
     try:
-        with ThreadPoolExecutor(max_workers=config.get('generation.num_workers', mp.cpu_count())) as executor:
+        num_workers = config.get('generation.num_workers', mp.cpu_count())
+        logger.info(f"Using {num_workers} workers for parallel generation")
+        
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for sample in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id), cases):
                 if sample:
                     current_batch.append(sample)
                     
-                    if len(current_batch) >= config.get('generation.batch_size', 10):
+                    if len(current_batch) >= batch_size:
                         save_batch(current_batch, args.dataset_output)
                         current_batch = []
                         
@@ -555,4 +555,4 @@ if __name__ == "__main__":
         if current_batch:
             save_batch(current_batch, args.dataset_output)
         pbar.close()
-        logger.info("Generation complete")
+        logger.info(f"Generation complete. Results saved to {args.dataset_output}")
