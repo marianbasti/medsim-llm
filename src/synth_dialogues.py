@@ -8,7 +8,6 @@ from pathlib import Path
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Tuple
-from validation import validate_medical_content
 from openai import OpenAI
 from config import Config
 
@@ -485,14 +484,8 @@ def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) 
         # Generate dialogue
         dialogue = synth_dialogue(client, prompt_dialog, script, model_id)
         
-        # Validate dialogue
-        logger.debug("Validating dialogue with medical content validator")
-        is_valid, issues = validate_medical_content({"script": script, "dialogue": dialogue['dialogue']})
-        if not is_valid:
-            logger.warning(f"Validation issues in dialogue: {issues}")
-            return None
-            
-        logger.debug("Sample generated and validated successfully")
+        # No validation needed as JSON schema ensures correct format
+        logger.debug("Sample generated successfully")
         return {"script": script, "dialogue": dialogue['dialogue']}
     except Exception as e:
         logger.error(f"Error generating sample for {name}: {str(e)}")

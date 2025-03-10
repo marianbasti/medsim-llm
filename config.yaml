@@ -15,10 +15,6 @@ output:
   backup_enabled: true
   format: jsonl
   path: data/generated
-prompts:
-  dialogue_correct: path/to/prompt_correct.txt
-  dialogue_incorrect: path/to/prompt_incorrect.txt
-  patient_script: path/to/prompt_script.txt
 
 # Fine-tuning parameters
 fine_tuning:
