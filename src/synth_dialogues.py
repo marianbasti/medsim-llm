@@ -12,10 +12,10 @@ from validation import validate_medical_content
 from openai import OpenAI
 from config import Config
 
-# Configure logging
+# Configure logging with debug level
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,  # Changed from INFO to DEBUG
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',  # Added module name to format
     handlers=[
         logging.FileHandler('dialogue_generation.log'),
         logging.StreamHandler()
@@ -35,6 +35,7 @@ def api_call_with_retry(client, messages, temperature, response_format, model):
     if not model:
         raise ValueError("Model ID is required")
     
+    logger.debug(f"Making API call to model: {model} with temperature: {temperature}")
     return client.chat.completions.create(
         model=model,
         messages=messages,
@@ -394,6 +395,7 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         dict: The synthesized patient-doctor dialogue.
     """
     try:
+        logger.debug(f"Generating dialogue with model: {model_id}")
         message_dialog = api_call_with_retry(
             client,
             messages=[{'role': 'user', 'content': prompt_dialog.format(patient_script=script)}],
@@ -404,18 +406,22 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         
         # Get content from the response
         content = message_dialog.choices[0].message.content
+        logger.debug(f"Received dialogue response type: {type(content)}")
         
         # Check if content is already a dict or if it needs parsing
         if isinstance(content, str):
             try:
                 # Try to parse it as JSON
-                return json.loads(content)
+                parsed_content = json.loads(content)
+                logger.debug("Successfully parsed string response as JSON")
+                return parsed_content
             except json.JSONDecodeError:
                 # If it can't be parsed, wrap it in a proper structure
                 logger.warning("Received non-JSON response, attempting to format it")
                 return {"dialogue": [{"role": "doctor", "content": content}]}
         else:
             # Content is already a dictionary
+            logger.debug("Response was already in dictionary format")
             return content
     except Exception as e:
         logger.error(f"Error generating dialogue: {str(e)}")
@@ -433,6 +439,7 @@ def synth_script(client, prompt_script, model_id):
         str: The synthesized patient script.
     """
     try:
+        logger.debug(f"Generating patient script with model: {model_id}")
         patient_script = api_call_with_retry(
             client,
             messages=[{'role': 'user', 'content': prompt_script}],
@@ -441,7 +448,9 @@ def synth_script(client, prompt_script, model_id):
             model=model_id
         )
         # With vLLM, the content is already parsed as JSON
-        return patient_script.choices[0].message.content
+        content = patient_script.choices[0].message.content
+        logger.debug(f"Received script response type: {type(content)}")
+        return content
     except Exception as e:
         logger.error(f"Error generating script: {str(e)}")
         raise
@@ -449,6 +458,7 @@ def synth_script(client, prompt_script, model_id):
 def save_batch(batch, output_file):
     """Save a batch of dialogues to file with error handling"""
     try:
+        logger.debug(f"Saving batch of {len(batch)} samples to {output_file}")
         with open(output_file, 'a') as f:
             for item in batch:
                 f.write(json.dumps(item) + '\n')
@@ -456,6 +466,7 @@ def save_batch(batch, output_file):
         logger.error(f"Error saving batch: {str(e)}")
         # Save to backup file
         backup_file = output_file + '.backup'
+        logger.debug(f"Attempting to save to backup file: {backup_file}")
         with open(backup_file, 'a') as f:
             for item in batch:
                 f.write(json.dumps(item) + '\n')
@@ -464,6 +475,7 @@ def save_batch(batch, output_file):
 def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> Dict[str, Any]:
     """Generate a dialogue for a given patient case"""
     try:
+        logger.debug(f"Generating sample for patient: {name} with illness: {illness[0]}")
         script = synth_script(client, prompt_script_2.format(
             name=name, 
             illness=illness[0],
@@ -474,11 +486,13 @@ def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) 
         dialogue = synth_dialogue(client, prompt_dialog, script, model_id)
         
         # Validate dialogue
+        logger.debug("Validating dialogue with medical content validator")
         is_valid, issues = validate_medical_content({"script": script, "dialogue": dialogue['dialogue']})
         if not is_valid:
             logger.warning(f"Validation issues in dialogue: {issues}")
             return None
             
+        logger.debug("Sample generated and validated successfully")
         return {"script": script, "dialogue": dialogue['dialogue']}
     except Exception as e:
         logger.error(f"Error generating sample for {name}: {str(e)}")
@@ -489,10 +503,20 @@ if __name__ == "__main__":
     parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
     parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
+    # Add debug level argument
+    parser.add_argument("--log_level", type=str, default="DEBUG", 
+                      choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                      help="Set the logging level")
+    
     args = parser.parse_args()
+    
+    # Set logging level from command line
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    logger.debug(f"Logging level set to {args.log_level}")
     
     # Load config
     config = Config(args.config)
+    logger.debug(f"Config loaded from: {args.config}")
     
     client = OpenAI(
         base_url=config.get('llm.base_url'),

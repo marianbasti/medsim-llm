@@ -17,6 +17,15 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import evaluate
 
+# Configure logging with debug level
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    handlers=[
+        logging.FileHandler('validation.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Add the missing function that synth_dialogues.py is trying to import
@@ -34,6 +43,8 @@ def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
     script = dialogue_data.get("script", "")
     dialogue = dialogue_data.get("dialogue", [])
     
+    logger.debug(f"Validating dialogue with {len(dialogue)} turns")
+    
     # Check if dialogue exists and has turns
     if not dialogue:
         issues.append("Dialogue is empty")
@@ -46,6 +57,7 @@ def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
         
         # Skip first turn check
         if i > 0 and current_role == last_role:
+            logger.debug(f"Non-alternating turn detected at position {i}: {current_role}")
             issues.append(f"Non-alternating turns detected at position {i}")
         
         last_role = current_role
@@ -60,8 +72,10 @@ def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
     # Look for medical conditions in script
     if isinstance(script, dict):
         # Extract medical conditions from structured script
+        logger.debug("Extracting medical terms from structured script")
         if "Medical History" in script and "conditions" in script["Medical History"]:
             key_terms.update(script["Medical History"]["conditions"])
+            logger.debug(f"Found conditions: {script['Medical History']['conditions']}")
         
         # Extract current symptoms
         if "Current Symptoms" in script:
@@ -73,8 +87,11 @@ def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
                     key_terms.update(re.findall(r'[\w\s]+(?:,|$)', symptoms["associated symptoms"]))
             elif isinstance(symptoms, str):
                 key_terms.update(re.findall(r'[\w\s]+(?:,|$)', symptoms))
+            
+            logger.debug(f"Extracted symptom terms: {key_terms}")
     else:
         # Try to extract from string script
+        logger.debug("Attempting to extract medical terms from script string")
         conditions_match = re.search(r'"conditions":\s*\[(.*?)\]', script_str)
         if conditions_match:
             conditions_str = conditions_match.group(1)
@@ -90,16 +107,21 @@ def validate_medical_content(dialogue_data: Dict) -> Tuple[bool, List[str]]:
     for term in key_terms:
         if term.lower() in dialogue_str.lower():
             mentioned_terms += 1
+            logger.debug(f"Found term '{term}' in dialogue")
     
     if mentioned_terms < min(2, len(key_terms)):
+        logger.warning(f"Dialogue only mentions {mentioned_terms} out of {len(key_terms)} medical terms")
         issues.append("Dialogue doesn't sufficiently reference patient's medical conditions")
     
     # Check for dialogue length
     if len(dialogue) < 6:
+        logger.debug(f"Dialogue too short: {len(dialogue)} turns")
         issues.append("Dialogue is too short (fewer than 6 turns)")
     
     # Return validation result
-    return len(issues) == 0, issues
+    is_valid = len(issues) == 0
+    logger.debug(f"Validation result: {is_valid}, issues: {len(issues)}")
+    return is_valid, issues
 
 
 class PatientResponseValidator:
@@ -107,7 +129,9 @@ class PatientResponseValidator:
     
     def __init__(self, config_path: Optional[str] = None):
         """Initialize validator with optional custom config."""
+        logger.debug(f"Initializing PatientResponseValidator with config path: {config_path}")
         self.config = self._load_config(config_path)
+        logger.debug("Loading evaluation metrics")
         self.metrics = {
             "rouge": evaluate.load("rouge"),
             "bertscore": evaluate.load("bertscore"),
@@ -116,9 +140,11 @@ class PatientResponseValidator:
         # Load sentence transformer for semantic similarity
         try:
             import sentence_transformers
+            logger.debug("Loading sentence transformer model")
             self.sentence_model = sentence_transformers.SentenceTransformer(
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
+            logger.debug("Sentence transformer model loaded successfully")
         except ImportError:
             logger.warning("sentence-transformers not installed, semantic similarity will be limited")
             self.sentence_model = None
@@ -126,9 +152,11 @@ class PatientResponseValidator:
     def _load_config(self, config_path: Optional[str] = None) -> Dict:
         """Load configuration from file or use defaults."""
         if config_path:
+            logger.debug(f"Loading config from file: {config_path}")
             with open(config_path, 'r') as f:
                 return yaml.safe_load(f)
         else:
+            logger.debug("Using default configuration")
             # Default configuration
             return {
                 "validation": {
@@ -159,6 +187,7 @@ class PatientResponseValidator:
             Float score between 0 and 1
         """
         if not dialogue_history or len(dialogue_history) <= 2:
+            logger.debug("Not enough dialogue history to calculate consistency")
             return 1.0  # Not enough history to check consistency
         
         # Extract patient's previous responses
@@ -166,19 +195,23 @@ class PatientResponseValidator:
                            if turn.get("role") == "patient"]
         
         if not patient_responses:
+            logger.debug("No previous patient responses found")
             return 1.0  # No previous patient responses
         
         # Check for contradictions with previous responses
         contradiction_score = 1.0
         
         if self.sentence_model:
+            logger.debug(f"Calculating semantic similarity with {len(patient_responses)} previous responses")
             # Use sentence transformers for semantic similarity
             embeddings = self.sentence_model.encode([response] + patient_responses)
             similarities = np.inner(embeddings[0], embeddings[1:])
             avg_similarity = np.mean(similarities)
             contradiction_score = min(1.0, max(0.0, avg_similarity))
+            logger.debug(f"Calculated consistency score: {contradiction_score}")
         else:
             # Fallback to simple heuristic
+            logger.debug("Using fallback heuristic for consistency score")
             contradiction_score = 0.7  # Default reasonable score
         
         return contradiction_score
@@ -290,14 +323,20 @@ class PatientResponseValidator:
         Returns:
             Dictionary with validation statistics
         """
+        logger.debug(f"Validating dataset: {data_path}")
+        
         # Load dataset
         with open(data_path, 'r', encoding='utf-8') as f:
             if data_path.endswith('.jsonl'):
                 data = [json.loads(line) for line in f]
+                logger.debug(f"Loaded {len(data)} items from JSONL file")
             elif data_path.endswith('.json'):
                 data = json.load(f)
+                logger.debug(f"Loaded data from JSON file")
             else:
-                raise ValueError(f"Unsupported file format: {data_path}")
+                error_msg = f"Unsupported file format: {data_path}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
         
         # Results container
         results = []
@@ -311,8 +350,11 @@ class PatientResponseValidator:
             "avg_overall": 0.0,
         }
         
+        logger.info(f"Starting validation of {len(data)} dialogues")
+        
         # Validate each dialogue
-        for item in data:
+        for item_idx, item in enumerate(data):
+            logger.debug(f"Validating dialogue {item_idx+1}/{len(data)}")
             script = item["script"]
             dialogue = item["dialogue"]
             
@@ -362,9 +404,11 @@ class PatientResponseValidator:
             stats["avg_script_adherence"] /= stats["total"]
             stats["avg_overall"] /= stats["total"]
             stats["pass_rate"] = stats["passed"] / stats["total"]
+            logger.info(f"Validation complete - Pass rate: {stats['pass_rate']:.2%}")
         
         # Save results if output path provided
         if output_path:
+            logger.debug(f"Saving validation results to {output_path}")
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump({"results": results, "statistics": stats}, f, indent=2)
         
@@ -377,7 +421,14 @@ def main():
     parser.add_argument('--data_path', type=str, required=True, help='Path to data file (json or jsonl)')
     parser.add_argument('--output_path', type=str, help='Path to save validation results')
     parser.add_argument('--config_path', type=str, help='Path to config file')
+    parser.add_argument('--log_level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='Set the logging level')
     args = parser.parse_args()
+    
+    # Set logging level from command line
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    logger.debug(f"Logging level set to {args.log_level}")
     
     # Initialize validator
     validator = PatientResponseValidator(args.config_path)
