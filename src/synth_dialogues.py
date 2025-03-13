@@ -59,24 +59,27 @@ Only provide the spoken dialogue, without any additional explanation, performanc
 
 # Updated schema for vLLM - dialogue schema
 dialogue_json_schema = {
-    "type": "object",
-    "properties": {
-        "dialogue": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "role": {
-                        "type": "string",
-                        "enum": ["doctor", "patient"]
+    "type": "json_object",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "dialogue": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "role": {
+                            "type": "string",
+                            "enum": ["doctor", "patient"]
+                        },
+                        "content": {"type": "string"}
                     },
-                    "content": {"type": "string"}
-                },
-                "required": ["role", "content"]
+                    "required": ["role", "content"]
+                }
             }
-        }
-    },
-    "required": ["dialogue"]
+        },
+        "required": ["dialogue"]
+    }
 }
 
 ### PATIENT CARD PROMPT AND JSON SCHEMA
@@ -85,116 +88,118 @@ The patient card must have with the following features: demographics, medical hi
 
 # Updated schema for vLLM - patient script schema 
 patient_script_json_schema = {
-    "type": "object",
-    "properties": {
-        "Name": {"type": "string"},
-        "Demographics": {
-            "type": "object",
-            "properties": {
-                "age": {"type": "integer"},
-                "sex": {"type": "string"},
-                "occupation": {"type": "string"},
-                "education level": {"type": "string"}
-            },
-            "required": ["age", "sex", "occupation", "education level"]
-        },
-        "Medical History": {
-            "type": "object",
-            "properties": {
-                "conditions": {"type": "array", "items": {"type": "string"}},
-                "medications": {"type": "array", "items": {"type": "string"}},
-                "allergies": {"type": "array", "items": {"type": "string"}},
-                "surgical history": {"type": "array", "items": {"type": "string"}}
-            },
-            "required": ["conditions", "medications", "allergies", "surgical history"]
-        },
-        "Current Symptoms": {
-            "type": "object",
-            "properties": {
-                "chief complaint": {"type": "string"},
-                "duration": {"type": "string"},
-                "severity": {"type": "string"},
-                "associated symptoms": {"type": "string"}
-            },
-            "required": ["chief complaint", "duration", "severity", "associated symptoms"]
-        },
-        "Personal Details": {
-            "type": "object",
-            "properties": {
-                "lifestyle habits": {"type": "string"},
-                "family dynamics": {"type": "string"},
-                "work": {"type": "string"},
-                "social history": {"type": "string"},
-                "mental health history": {"type": "string"}
-            },
-            "required": ["lifestyle habits", "family dynamics", "work", "social history", "mental health history"]
-        },
-        "Behavioral and Cognitive Factors": {
-            "type": "object",
-            "properties": {
-                "personality traits": {"type": "string"},
-                "cognitive function": {"type": "string"},
-                "behavioral patterns": {"type": "string"}
-            },
-            "required": ["personality traits", "cognitive function", "behavioral patterns"]
-        },
-        "Healthcare Utilization": {
-            "type": "object",
-            "properties": {
-                "recent_hospitalizations": {
-                    "type": "boolean"
+    "type": "json_object",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "Name": {"type": "string"},
+            "Demographics": {
+                "type": "object",
+                "properties": {
+                    "age": {"type": "integer"},
+                    "sex": {"type": "string"},
+                    "occupation": {"type": "string"},
+                    "education level": {"type": "string"}
                 },
-                "recent_hospitalizations_cause": {
-                    "type": "string"
+                "required": ["age", "sex", "occupation", "education level"]
+            },
+            "Medical History": {
+                "type": "object",
+                "properties": {
+                    "conditions": {"type": "array", "items": {"type": "string"}},
+                    "medications": {"type": "array", "items": {"type": "string"}},
+                    "allergies": {"type": "array", "items": {"type": "string"}},
+                    "surgical history": {"type": "array", "items": {"type": "string"}}
                 },
-                "emergency_room_visits": {
-                    "type": "boolean"
+                "required": ["conditions", "medications", "allergies", "surgical history"]
+            },
+            "Current Symptoms": {
+                "type": "object",
+                "properties": {
+                    "chief complaint": {"type": "string"},
+                    "duration": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "associated symptoms": {"type": "string"}
                 },
-                "emergency_room_visits_cause": {
-                    "type": "string"
-                }
+                "required": ["chief complaint", "duration", "severity", "associated symptoms"]
             },
-            "required": ["recent_hospitalizations", "emergency_room_visits"],
-            "if": {
+            "Personal Details": {
+                "type": "object",
                 "properties": {
-                    "recent_hospitalizations": { "const": True }
-                }
+                    "lifestyle habits": {"type": "string"},
+                    "family dynamics": {"type": "string"},
+                    "work": {"type": "string"},
+                    "social history": {"type": "string"},
+                    "mental health history": {"type": "string"}
+                },
+                "required": ["lifestyle habits", "family dynamics", "work", "social history", "mental health history"]
             },
-            "then": {
-                "required": ["recent_hospitalizations_cause"]
-            },
-            "else": {
+            "Behavioral and Cognitive Factors": {
+                "type": "object",
                 "properties": {
-                    "recent_hospitalizations_cause": { "type": "null" }
-                }
+                    "personality traits": {"type": "string"},
+                    "cognitive function": {"type": "string"},
+                    "behavioral patterns": {"type": "string"}
+                },
+                "required": ["personality traits", "cognitive function", "behavioral patterns"]
             },
-            "if": {
+            "Healthcare Utilization": {
+                "type": "object",
                 "properties": {
-                    "emergency_room_visits": { "const": True }
-                }
-            },
-            "then": {
-                "required": ["emergency_room_visits_cause"]
-            },
-            "else": {
-                "properties": {
-                    "emergency_room_visits_cause": { "type": "null" }
+                    "recent_hospitalizations": {
+                        "type": "boolean"
+                    },
+                    "recent_hospitalizations_cause": {
+                        "type": "string"
+                    },
+                    "emergency_room_visits": {
+                        "type": "boolean"
+                    },
+                    "emergency_room_visits_cause": {
+                        "type": "string"
+                    }
+                },
+                "required": ["recent_hospitalizations", "emergency_room_visits"],
+                "if": {
+                    "properties": {
+                        "recent_hospitalizations": { "const": True }
+                    }
+                },
+                "then": {
+                    "required": ["recent_hospitalizations_cause"]
+                },
+                "else": {
+                    "properties": {
+                        "recent_hospitalizations_cause": { "type": "null" }
+                    }
+                },
+                "if": {
+                    "properties": {
+                        "emergency_room_visits": { "const": True }
+                    }
+                },
+                "then": {
+                    "required": ["emergency_room_visits_cause"]
+                },
+                "else": {
+                    "properties": {
+                        "emergency_room_visits_cause": { "type": "null" }
+                    }
                 }
             }
-        }
-    },
-    "required": [
-        "Name",
-        "Demographics", 
-        "Medical History",
-        "Current Symptoms",
-        "Personal Details",
-        "Behavioral and Cognitive Factors",
-        "Healthcare Utilization"
-    ]
+        },
+        "required": [
+            "Name",
+            "Demographics", 
+            "Medical History",
+            "Current Symptoms",
+            "Personal Details",
+            "Behavioral and Cognitive Factors",
+            "Healthcare Utilization"
+        ]
+    }
 }
 
-# ... (keeping argentinian_names and illneses lists unchanged)
 argentinian_names = [
     "Juan Pérez",
     "María González",

@@ -25,6 +25,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
     set_seed,
+    DataCollatorForSeq2Seq,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import wandb
@@ -93,51 +94,66 @@ def create_patient_dataset(
     """
     logger.info(f"Loading data from {data_path}")
     
+    raw_data = []
     with open(data_path, 'r', encoding='utf-8') as f:
         if data_path.endswith('.jsonl'):
-            data = [json.loads(line) for line in f]
+            for line in f:
+                try:
+                    raw_data.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error decoding JSON line: {e}")
+                    continue
         elif data_path.endswith('.json'):
-            data = json.load(f)
+            raw_data = json.load(f)
         else:
             raise ValueError(f"Unsupported file format: {data_path}")
     
     # Prepare the conversation format for training
     processed_samples = []
     
-    logger.info(f"Processing {len(data)} dialogue samples")
-    for sample in data:
-        script = sample["script"]
-        dialogue = sample["dialogue"]
-        
-        # Extract only the patient responses
-        patient_turns = [turn["content"] for turn in dialogue if turn["role"] == "patient"]
-        
-        if len(patient_turns) == 0:
+    logger.info(f"Processing {len(raw_data)} dialogue samples")
+    for sample in raw_data:
+        if 'script' not in sample or 'dialogue' not in sample:
+            logger.warning("Sample is missing required fields 'script' or 'dialogue'. Skipping.")
             continue
-        
-        # Create patient roleplay prompt from script
-        prompt = f"You are roleplaying as a patient visiting a doctor. Here are your details:\n{script}\n\nYou must stay in character as this patient and respond to the doctor's questions in a realistic way based on your patient details.\n\nDoctor: "
-        
-        for i, (doc_turn, patient_turn) in enumerate(zip(
-            [turn["content"] for turn in dialogue if turn["role"] == "doctor"],
-            patient_turns
-        )):
-            if i == 0:
-                # First turn: use the prompt + doctor's question
-                input_text = f"{prompt}{doc_turn}\nPatient: "
-            else:
-                # Subsequent turns: use conversation history
-                history = ""
-                for j in range(i):
-                    history += f"\nDoctor: {dialogue[j*2]['content']}\nPatient: {dialogue[j*2+1]['content']}"
-                input_text = f"{prompt}{history}\nDoctor: {doc_turn}\nPatient: "
             
-            # Create sample with input_text and target_text
-            processed_samples.append({
-                "input": input_text,
-                "output": patient_turn,
-                "instruction": f"Respond as the patient described in the profile to this doctor's question: {doc_turn}"
-            })
+        script = sample["script"]
+        dialogue = sample.get("dialogue", [])
+        
+        # Check if the dialogue contains doctor-patient conversation
+        doctor_turns = [turn for turn in dialogue if turn.get("role") == "doctor"]
+        if not doctor_turns:
+            logger.warning("No doctor turns found in dialogue. Skipping sample.")
+            continue
+            
+        # First doctor's message to start the conversation
+        doctor_message = doctor_turns[0]["content"]
+        
+        # Create a prompt with instructions
+        prompt = f"You are roleplaying as a patient visiting a doctor. Follow the instructions below to stay in character.\n\n"
+        prompt += f"Patient Profile:\n{script}\n\n"
+        prompt += f"Respond to the doctor's question as the patient described above. Be concise and realistic.\n\n"
+        prompt += f"Doctor: {doctor_message}\n\nPatient:"
+        
+        # Get the patient's response (if any)
+        patient_response = ""
+        for i, turn in enumerate(dialogue):
+            if i > 0 and turn.get("role") == "patient":
+                patient_response = turn["content"]
+                break
+        
+        if not patient_response:
+            logger.warning("No patient response found. Skipping sample.")
+            continue
+            
+        # Create the sample
+        processed_samples.append({
+            "prompt": prompt,
+            "response": patient_response
+        })
+    
+    if not processed_samples:
+        raise ValueError("No valid samples found in the dataset after processing!")
     
     # Convert to Dataset
     dataset = Dataset.from_list(processed_samples)
@@ -145,50 +161,40 @@ def create_patient_dataset(
     
     # Tokenize function
     def tokenize_function(examples):
-        # Tokenize inputs
-        tokenized_inputs = tokenizer(
-            examples["input"],
+        # Tokenize prompts and responses
+        prompts = examples["prompt"]
+        responses = examples["response"]
+        
+        # Join them for the complete sequence
+        texts = [prompt + response for prompt, response in zip(prompts, responses)]
+        
+        # Calculate prompt lengths for later use
+        prompt_lengths = [len(tokenizer(prompt, add_special_tokens=False).input_ids) for prompt in prompts]
+        
+        # Tokenize the full sequences with padding and truncation
+        tokenized = tokenizer(
+            texts,
             truncation=True,
-            max_length=max_seq_length - 512,  # Reserve space for output
-            padding=False,
+            max_length=max_seq_length,
+            padding="max_length",  # Changed to max_length to ensure all examples have the same length
             return_tensors=None,
         )
         
-        # Tokenize outputs
-        tokenized_outputs = tokenizer(
-            examples["output"],
-            truncation=True,
-            max_length=512,  # Max output length
-            padding=False,
-            return_tensors=None,
-        )
+        # Create label mask: -100 for prompt tokens, actual ids for response tokens
+        labels = []
+        for i, input_ids in enumerate(tokenized["input_ids"]):
+            # Set prompt part to -100 (ignored in loss)
+            prompt_len = min(prompt_lengths[i], max_seq_length)
+            label = [-100] * prompt_len + input_ids[prompt_len:]
+            # Ensure the same length as input_ids by padding with -100
+            if len(label) < max_seq_length:
+                label.extend([-100] * (max_seq_length - len(label)))
+            # Truncate if too long
+            label = label[:max_seq_length]
+            labels.append(label)
         
-        # Create labels, copying input_ids but setting them to -100 (ignored in loss)
-        input_ids = tokenized_inputs["input_ids"]
-        output_ids = tokenized_outputs["input_ids"]
-        
-        # Combine input and output, with labels being -100 for input
-        combined_input_ids = []
-        combined_labels = []
-        
-        for input_seq, output_seq in zip(input_ids, output_ids):
-            combined_seq = input_seq + output_seq
-            # Labels: -100 for input, actual IDs for output
-            labels = [-100] * len(input_seq) + output_seq
-            
-            # Truncate if needed
-            if len(combined_seq) > max_seq_length:
-                combined_seq = combined_seq[:max_seq_length]
-                labels = labels[:max_seq_length]
-                
-            combined_input_ids.append(combined_seq)
-            combined_labels.append(labels)
-        
-        return {
-            "input_ids": combined_input_ids,
-            "labels": combined_labels,
-            "attention_mask": [[1] * len(seq) for seq in combined_input_ids],
-        }
+        tokenized["labels"] = labels
+        return tokenized
     
     # Tokenize the dataset
     logger.info("Tokenizing dataset...")
@@ -314,6 +320,20 @@ def main():
         seed=training_args.seed
     )
     
+    # Set remove_unused_columns=False in the training arguments
+    if not hasattr(training_args, "remove_unused_columns") or training_args.remove_unused_columns:
+        logger.info("Setting remove_unused_columns=False to prevent column mismatch errors")
+        training_args.remove_unused_columns = False
+    
+    # Create a custom data collator that properly handles padding
+    logger.info("Creating data collator with padding and truncation")
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        padding=True,
+        label_pad_token_id=-100,
+        return_tensors="pt",
+    )
+    
     # Initialize trainer
     logger.info("Initializing Trainer")
     trainer = Trainer(
@@ -322,7 +342,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
-        data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        data_collator=data_collator,  # Using the custom data collator
     )
     
     # Start training

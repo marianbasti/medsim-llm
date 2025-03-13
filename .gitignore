@@ -36,3 +36,5 @@ data/processed/*
 data/raw/*
 !data/processed/.gitkeep
 *.log
+wandb/
+models/
