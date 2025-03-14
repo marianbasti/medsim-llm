@@ -10,6 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Tuple
 from openai import OpenAI
 from config import Config
+from pydantic import BaseModel, Field
+from enum import Enum
+from typing import List, Optional, Union
 
 # Configure logging with more informative format
 logging.basicConfig(
@@ -45,7 +48,7 @@ def api_call_with_retry(client, messages, temperature, response_format, model):
 parser = argparse.ArgumentParser()
 # Add arguments
 parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
-parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
+parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es.json', help="Path to JSON output")
 parser.add_argument("--base_url", type=str, default='http://localhost:7000/v1/', help="Base URL for API requests")
 
 # Parse arguments
@@ -58,147 +61,72 @@ Only provide the spoken dialogue, without any additional explanation, performanc
 """
 
 # Updated schema for vLLM - dialogue schema
-dialogue_json_schema = {
-    "type": "json_object",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "dialogue": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "role": {
-                            "type": "string",
-                            "enum": ["doctor", "patient"]
-                        },
-                        "content": {"type": "string"}
-                    },
-                    "required": ["role", "content"]
-                }
-            }
-        },
-        "required": ["dialogue"]
-    }
-}
+class Role(str, Enum):
+    doctor = "doctor"
+    patient = "patient"
+
+class DialogueMessage(BaseModel):
+    role: Role
+    content: str
+
+class Dialogue(BaseModel):
+    dialogue: List[DialogueMessage]
+
+# Create schema for dialogue using Pydantic
+dialogue_json_schema = Dialogue.model_json_schema()
 
 ### PATIENT CARD PROMPT AND JSON SCHEMA
 prompt_script_2 = """Generate a patient card for {name} that has {illness}. Their symptoms are: {symptoms}.
 The patient card must have with the following features: demographics, medical history, current symptoms, personal details, behavioral and cognitive factors, and healthcare utilization. Ensure that the patient card is realistic and diverse in terms of age, sex, occupation, and medical conditions. Use natural language. The features should be realistic and coherent. Let's have a complex and low-income social context, in a country with free healthcare. The patient's dialogue must be short and simple."""
 
-# Updated schema for vLLM - patient script schema 
-patient_script_json_schema = {
-    "type": "json_object",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "Name": {"type": "string"},
-            "Demographics": {
-                "type": "object",
-                "properties": {
-                    "age": {"type": "integer"},
-                    "sex": {"type": "string"},
-                    "occupation": {"type": "string"},
-                    "education level": {"type": "string"}
-                },
-                "required": ["age", "sex", "occupation", "education level"]
-            },
-            "Medical History": {
-                "type": "object",
-                "properties": {
-                    "conditions": {"type": "array", "items": {"type": "string"}},
-                    "medications": {"type": "array", "items": {"type": "string"}},
-                    "allergies": {"type": "array", "items": {"type": "string"}},
-                    "surgical history": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["conditions", "medications", "allergies", "surgical history"]
-            },
-            "Current Symptoms": {
-                "type": "object",
-                "properties": {
-                    "chief complaint": {"type": "string"},
-                    "duration": {"type": "string"},
-                    "severity": {"type": "string"},
-                    "associated symptoms": {"type": "string"}
-                },
-                "required": ["chief complaint", "duration", "severity", "associated symptoms"]
-            },
-            "Personal Details": {
-                "type": "object",
-                "properties": {
-                    "lifestyle habits": {"type": "string"},
-                    "family dynamics": {"type": "string"},
-                    "work": {"type": "string"},
-                    "social history": {"type": "string"},
-                    "mental health history": {"type": "string"}
-                },
-                "required": ["lifestyle habits", "family dynamics", "work", "social history", "mental health history"]
-            },
-            "Behavioral and Cognitive Factors": {
-                "type": "object",
-                "properties": {
-                    "personality traits": {"type": "string"},
-                    "cognitive function": {"type": "string"},
-                    "behavioral patterns": {"type": "string"}
-                },
-                "required": ["personality traits", "cognitive function", "behavioral patterns"]
-            },
-            "Healthcare Utilization": {
-                "type": "object",
-                "properties": {
-                    "recent_hospitalizations": {
-                        "type": "boolean"
-                    },
-                    "recent_hospitalizations_cause": {
-                        "type": "string"
-                    },
-                    "emergency_room_visits": {
-                        "type": "boolean"
-                    },
-                    "emergency_room_visits_cause": {
-                        "type": "string"
-                    }
-                },
-                "required": ["recent_hospitalizations", "emergency_room_visits"],
-                "if": {
-                    "properties": {
-                        "recent_hospitalizations": { "const": True }
-                    }
-                },
-                "then": {
-                    "required": ["recent_hospitalizations_cause"]
-                },
-                "else": {
-                    "properties": {
-                        "recent_hospitalizations_cause": { "type": "null" }
-                    }
-                },
-                "if": {
-                    "properties": {
-                        "emergency_room_visits": { "const": True }
-                    }
-                },
-                "then": {
-                    "required": ["emergency_room_visits_cause"]
-                },
-                "else": {
-                    "properties": {
-                        "emergency_room_visits_cause": { "type": "null" }
-                    }
-                }
-            }
-        },
-        "required": [
-            "Name",
-            "Demographics", 
-            "Medical History",
-            "Current Symptoms",
-            "Personal Details",
-            "Behavioral and Cognitive Factors",
-            "Healthcare Utilization"
-        ]
-    }
-}
+# Pydantic models for patient script schema
+class Demographics(BaseModel):
+    age: int
+    sex: str
+    occupation: str
+    education_level: str = Field(alias="education level")
+
+class MedicalHistory(BaseModel):
+    conditions: List[str]
+    medications: List[str]
+    allergies: List[str]
+    surgical_history: List[str] = Field(alias="surgical history")
+
+class CurrentSymptoms(BaseModel):
+    chief_complaint: str = Field(alias="chief complaint")
+    duration: str
+    severity: str
+    associated_symptoms: str = Field(alias="associated symptoms")
+
+class PersonalDetails(BaseModel):
+    lifestyle_habits: str = Field(alias="lifestyle habits")
+    family_dynamics: str = Field(alias="family dynamics")
+    work: str
+    social_history: str = Field(alias="social history")
+    mental_health_history: str = Field(alias="mental health history")
+
+class BehavioralCognitiveFactors(BaseModel):
+    personality_traits: str = Field(alias="personality traits")
+    cognitive_function: str = Field(alias="cognitive function")
+    behavioral_patterns: str = Field(alias="behavioral patterns")
+
+class HealthcareUtilization(BaseModel):
+    recent_hospitalizations: bool
+    recent_hospitalizations_cause: Optional[str] = None
+    emergency_room_visits: bool
+    emergency_room_visits_cause: Optional[str] = None
+
+class PatientScript(BaseModel):
+    Name: str
+    Demographics: Demographics
+    Medical_History: MedicalHistory = Field(alias="Medical History")
+    Current_Symptoms: CurrentSymptoms = Field(alias="Current Symptoms")
+    Personal_Details: PersonalDetails = Field(alias="Personal Details")
+    Behavioral_and_Cognitive_Factors: BehavioralCognitiveFactors = Field(alias="Behavioral and Cognitive Factors")
+    Healthcare_Utilization: HealthcareUtilization = Field(alias="Healthcare Utilization")
+
+# Create schema for patient script using Pydantic
+patient_script_json_schema = PatientScript.model_json_schema()
 
 argentinian_names = [
     "Juan Pérez",
