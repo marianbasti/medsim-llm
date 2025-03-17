@@ -115,7 +115,7 @@ class HealthcareUtilization(BaseModel):
     recent_hospitalizations_cause: Optional[str] = None
     emergency_room_visits: bool
     emergency_room_visits_cause: Optional[str] = None
-
+j
 class PatientScript(BaseModel):
     Name: str
     Demographics: Demographics
