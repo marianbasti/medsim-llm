@@ -18,7 +18,6 @@ This can be used for medical training simulations, doctor communication practice
 ├── requirements.txt     # Python dependencies
 ├── data/
 │   ├── raw/             # Raw dialogue datasets
-│   │   └── medsim-dialogues-llama70b.jsonl
 │   └── processed/       # Processed datasets (created during training)
 ├── models/              # Directory to store fine-tuned models
 ├── src/

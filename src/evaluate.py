@@ -249,7 +249,7 @@ def batch_evaluate(dialogues: List[Dict]) -> List[Dict[str, float]]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate doctor-patient dialogues")
-    parser.add_argument("--dataset_input", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.jsonl', help="Path to dialogue dataset to evaluate")
+    parser.add_argument("--dataset_input", type=str, default='dialogo_medico-paciente_es.jsonl', help="Path to dialogue dataset to evaluate")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
     parser.add_argument("--log_level", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
                        default='INFO', help="Set the logging level")

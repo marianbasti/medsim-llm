@@ -424,7 +424,7 @@ def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_samples", type=int, default=20500, help="Number of dataset samples to generate")
-    parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es_Llama-3.1-8B-Q8.json', help="Path to JSON output")
+    parser.add_argument("--dataset_output", type=str, default='dialogo_medico-paciente_es.jsonl', help="Path to JSON output")
     parser.add_argument("--config", type=str, default='config.yaml', help="Path to config file")
     parser.add_argument("--log_level", type=str, default="INFO", 
                       choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
