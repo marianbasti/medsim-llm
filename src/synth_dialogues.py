@@ -7,7 +7,7 @@ import tenacity
 from pathlib import Path
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Union
 from openai import OpenAI
 from config import Config
 from pydantic import BaseModel, Field
@@ -259,6 +259,42 @@ illneses = [
     ["Peptic Ulcer", "Burning pain in upper abdomen, pain improves briefly when eating then worsens, nausea, feeling uncomfortably full after eating small meals, unexplained weight loss of 3kg"]
 ]
 
+# Spanish character mappings
+SPANISH_CHARS = {
+    '\\u00e1': 'á',  # a with acute
+    '\\u00e9': 'é',  # e with acute
+    '\\u00ed': 'í',  # i with acute
+    '\\u00f3': 'ó',  # o with acute
+    '\\u00fa': 'ú',  # u with acute
+    '\\u00f1': 'ñ',  # n with tilde
+    '\\u00c1': 'Á',  # A with acute
+    '\\u00c9': 'É',  # E with acute
+    '\\u00cd': 'Í',  # I with acute
+    '\\u00d3': 'Ó',  # O with acute
+    '\\u00da': 'Ú',  # U with acute
+    '\\u00d1': 'Ñ',  # N with tilde
+    '\\u00fc': 'ü',  # u with diaeresis
+    '\\u00dc': 'Ü',  # U with diaeresis
+    '\\u00bf': '¿',  # inverted question mark
+    '\\u00a1': '¡'   # inverted exclamation mark
+}
+
+def sanitize_spanish_text(text: Union[str, dict, list]) -> Union[str, dict, list]:
+    """
+    Recursively sanitize Spanish text by replacing Unicode escape sequences with proper characters.
+    Can handle strings, dictionaries, and lists.
+    """
+    if isinstance(text, str):
+        result = text
+        for escaped, char in SPANISH_CHARS.items():
+            result = result.replace(escaped, char)
+        return result
+    elif isinstance(text, dict):
+        return {k: sanitize_spanish_text(v) for k, v in text.items()}
+    elif isinstance(text, list):
+        return [sanitize_spanish_text(item) for item in text]
+    return text
+
 # Transform the data to train with LMFlow
 def lmflow_training_format(data):
     """
@@ -390,18 +426,22 @@ def synth_script(client, prompt_script, model_id):
 def save_batch(batch, output_file):
     """Save a batch of dialogues to file with error handling"""
     try:
-        with open(output_file, 'a') as f:
+        with open(output_file, 'a', encoding='utf-8') as f:
             for item in batch:
-                f.write(json.dumps(item) + '\n')
+                # Sanitize the item before saving
+                sanitized_item = sanitize_spanish_text(item)
+                f.write(json.dumps(sanitized_item, ensure_ascii=False) + '\n')
         logger.info(f"Saved batch of {len(batch)} samples")
     except Exception as e:
         logger.error(f"Error saving batch: {str(e)}")
         # Save to backup file
         backup_file = output_file + '.backup'
         logger.warning(f"Attempting to save to backup file: {backup_file}")
-        with open(backup_file, 'a') as f:
+        with open(backup_file, 'a', encoding='utf-8') as f:
             for item in batch:
-                f.write(json.dumps(item) + '\n')
+                # Sanitize the item before saving to backup
+                sanitized_item = sanitize_spanish_text(item)
+                f.write(json.dumps(sanitized_item, ensure_ascii=False) + '\n')
         logger.info(f"Batch saved to backup file: {backup_file}")
 
 def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> Dict[str, Any]:
