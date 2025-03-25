@@ -348,23 +348,9 @@ def main():
         logger.info("Setting remove_unused_columns=False to prevent column mismatch errors")
         training_args.remove_unused_columns = False
     
-    # Create a custom data collator that properly handles padding and ensures proper tensor dimensions
-    logger.info("Creating robust data collator with padding and dimension handling")
-    class RobustSeq2SeqCollator(DataCollatorForSeq2Seq):
-        def __call__(self, features, return_tensors=None):
-            # First use the parent class to handle most of the work
-            batch = super().__call__(features, return_tensors=return_tensors)
-            
-            # Ensure all tensors are at least 1-dimensional to prevent scatter errors
-            for key, value in batch.items():
-                if isinstance(value, torch.Tensor) and value.dim() == 0:
-                    # Convert 0-dim tensor to 1-dim tensor
-                    batch[key] = value.unsqueeze(0)
-            
-            return batch
-    
-    # Use the robust collator
-    data_collator = RobustSeq2SeqCollator(
+    # Create a custom data collator that properly handles padding
+    logger.info("Creating data collator with padding and truncation")
+    data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         padding=True,
         label_pad_token_id=-100,
