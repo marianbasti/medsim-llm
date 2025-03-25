@@ -332,6 +332,12 @@ def main():
         # Get PEFT model
         model = get_peft_model(model, peft_config)
         
+        # Set static graph for distributed training with PEFT
+        # This fixes the "Parameter has been marked as ready twice" error in DDP
+        if hasattr(model, "_set_static_graph"):
+            logger.info("Setting static graph for distributed training optimization")
+            model._set_static_graph()
+        
         # Log trainable parameters
         trainable_params, all_params = model.get_nb_trainable_parameters()
         logger.info(f"Trainable parameters: {trainable_params:,d} ({trainable_params / all_params:.2%} of {all_params:,d} total parameters)")
