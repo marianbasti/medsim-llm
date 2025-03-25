@@ -30,9 +30,9 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import wandb
 import yaml
+from accelerate import Accelerator
 
 from config import load_config
-from accelerate import Accelerator
 
 # Configure logging with more informative format
 logging.basicConfig(
@@ -259,6 +259,9 @@ def main():
     transformers.utils.logging.set_verbosity_info()
     transformers.utils.logging.enable_default_handler()
     
+    # Initialize accelerator
+    accelerator = Accelerator()
+    
     # Set seed
     set_seed(training_args.seed)
     logger.info(f"Training with random seed: {training_args.seed}")
@@ -288,10 +291,8 @@ def main():
     else:
         bnb_config = None
     
-    # Additional keyword arguments
-    kwargs = {
-        # "device_map": "auto",
-    }
+    # Additional keyword arguments - IMPORTANT: Remove device_map='auto' for distributed training
+    kwargs = {}
     
     if model_args.use_flash_attention:
         logger.info("Using Flash Attention 2.0")
@@ -358,59 +359,48 @@ def main():
         return_tensors="pt",
     )
     
-    # Initialize Accelerator
-    accelerator = Accelerator()
-
-    # Wrap model, datasets, and data collator with Accelerator
-    model, train_dataset, eval_dataset, data_collator = accelerator.prepare(
-        model, train_dataset, eval_dataset, data_collator
+    # Initialize trainer
+    logger.info("Initializing Trainer")
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        tokenizer=tokenizer,
+        data_collator=data_collator,  # Using the custom data collator
     )
-
-    # Initialize optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=training_args.learning_rate)
-
-    # Training loop with metrics logging
-    for epoch in range(training_args.num_train_epochs):
-        model.train()
-        total_loss = 0
-        for step, batch in enumerate(train_dataset):
-            # Move batch to the correct device
-            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-
-            # Forward pass
-            outputs = model(**batch)
-            loss = outputs.loss
-            total_loss += loss.item()
-
-            # Backward pass
-            accelerator.backward(loss)
-
-            # Optimizer step
-            optimizer.step()
-            optimizer.zero_grad()
-
-        # Log training loss
-        logger.info(f"Epoch {epoch + 1}/{training_args.num_train_epochs}, Loss: {total_loss / len(train_dataset)}")
-
-        # Evaluation loop
-        if eval_dataset:
-            model.eval()
-            eval_loss = 0
-            for step, batch in enumerate(eval_dataset):
-                batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-                with torch.no_grad():
-                    outputs = model(**batch)
-                    eval_loss += outputs.loss.item()
-
-            # Log evaluation loss
-            logger.info(f"Epoch {epoch + 1}/{training_args.num_train_epochs}, Eval Loss: {eval_loss / len(eval_dataset)}")
     
-    # Save the model and tokenizer
-    accelerator.wait_for_everyone()
+    # Prepare trainer with accelerator
+    trainer = accelerator.prepare(trainer)
+    
+    # Start training
+    logger.info(f"Starting training with batch size: {training_args.per_device_train_batch_size}, gradient accumulation: {training_args.gradient_accumulation_steps}")
+    logger.info(f"Using learning rate: {training_args.learning_rate}, weight decay: {training_args.weight_decay}")
+    logger.info(f"Training will save checkpoints to: {training_args.output_dir}")
+    
+    train_result = trainer.train()
+    
+    # Save model (only on main process)
     if accelerator.is_main_process:
-        model.save_pretrained(training_args.output_dir)
+        logger.info(f"Training complete! Saving model to {training_args.output_dir}")
+        trainer.save_model()
+        
+        # Save tokenizer
         tokenizer.save_pretrained(training_args.output_dir)
-
+        
+        # Log metrics
+        metrics = train_result.metrics
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        
+        # Run evaluation if validation dataset exists
+        if eval_dataset:
+            logger.info("Running final evaluation")
+            eval_metrics = trainer.evaluate()
+            trainer.log_metrics("eval", eval_metrics)
+            trainer.save_metrics("eval", eval_metrics)
+            logger.info(f"Evaluation results: {eval_metrics}")
+    
     logger.info("Training completed successfully!")
 
 
