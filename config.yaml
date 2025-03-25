@@ -23,8 +23,8 @@ fine_tuning:
     use_4bit: true
     use_flash_attention: true
   training:
-    batch_size: 8
-    gradient_accumulation_steps: 4
+    batch_size: 4
+    gradient_accumulation_steps: 2
     learning_rate: 2.0e-5
     weight_decay: 0.01
     max_steps: 1000
@@ -36,7 +36,7 @@ fine_tuning:
     lora_dropout: 0.1
     lora_r: 32
   data:
-    train_file: "dialogo_medico-paciente-es.jsonl"
+    train_file: "dialogo_medico-paciente_es.jsonl"
     validation_file: null
     validation_split: 0.1
   output:

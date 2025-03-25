@@ -30,7 +30,6 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import wandb
 import yaml
-from accelerate import Accelerator
 
 from config import load_config
 
@@ -259,9 +258,6 @@ def main():
     transformers.utils.logging.set_verbosity_info()
     transformers.utils.logging.enable_default_handler()
     
-    # Initialize accelerator
-    accelerator = Accelerator()
-    
     # Set seed
     set_seed(training_args.seed)
     logger.info(f"Training with random seed: {training_args.seed}")
@@ -291,8 +287,10 @@ def main():
     else:
         bnb_config = None
     
-    # Additional keyword arguments - IMPORTANT: Remove device_map='auto' for distributed training
-    kwargs = {}
+    # Additional keyword arguments
+    kwargs = {
+        # "device_map": "auto",
+    }
     
     if model_args.use_flash_attention:
         logger.info("Using Flash Attention 2.0")
@@ -332,12 +330,6 @@ def main():
         # Get PEFT model
         model = get_peft_model(model, peft_config)
         
-        # Set static graph for distributed training with PEFT
-        # This fixes the "Parameter has been marked as ready twice" error in DDP
-        if hasattr(model, "_set_static_graph"):
-            logger.info("Setting static graph for distributed training optimization")
-            model._set_static_graph()
-        
         # Log trainable parameters
         trainable_params, all_params = model.get_nb_trainable_parameters()
         logger.info(f"Trainable parameters: {trainable_params:,d} ({trainable_params / all_params:.2%} of {all_params:,d} total parameters)")
@@ -376,9 +368,6 @@ def main():
         data_collator=data_collator,  # Using the custom data collator
     )
     
-    # Prepare trainer with accelerator
-    trainer = accelerator.prepare(trainer)
-    
     # Start training
     logger.info(f"Starting training with batch size: {training_args.per_device_train_batch_size}, gradient accumulation: {training_args.gradient_accumulation_steps}")
     logger.info(f"Using learning rate: {training_args.learning_rate}, weight decay: {training_args.weight_decay}")
@@ -386,26 +375,25 @@ def main():
     
     train_result = trainer.train()
     
-    # Save model (only on main process)
-    if accelerator.is_main_process:
-        logger.info(f"Training complete! Saving model to {training_args.output_dir}")
-        trainer.save_model()
-        
-        # Save tokenizer
-        tokenizer.save_pretrained(training_args.output_dir)
-        
-        # Log metrics
-        metrics = train_result.metrics
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-        
-        # Run evaluation if validation dataset exists
-        if eval_dataset:
-            logger.info("Running final evaluation")
-            eval_metrics = trainer.evaluate()
-            trainer.log_metrics("eval", eval_metrics)
-            trainer.save_metrics("eval", eval_metrics)
-            logger.info(f"Evaluation results: {eval_metrics}")
+    # Save model
+    logger.info(f"Training complete! Saving model to {training_args.output_dir}")
+    trainer.save_model()
+    
+    # Save tokenizer
+    tokenizer.save_pretrained(training_args.output_dir)
+    
+    # Log metrics
+    metrics = train_result.metrics
+    trainer.log_metrics("train", metrics)
+    trainer.save_metrics("train", metrics)
+    
+    # Run evaluation if validation dataset exists
+    if eval_dataset:
+        logger.info("Running final evaluation")
+        eval_metrics = trainer.evaluate()
+        trainer.log_metrics("eval", eval_metrics)
+        trainer.save_metrics("eval", eval_metrics)
+        logger.info(f"Evaluation results: {eval_metrics}")
     
     logger.info("Training completed successfully!")
 
