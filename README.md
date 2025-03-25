@@ -133,6 +133,12 @@ python src/inference.py \
   --use_4bit
 ```
 
+#### Using vLLM
+Alternatively, you can use vLLM for faster inference:
+
+```bash
+docker run --rm --gpus all -p 8001:8001 -v ./output:/models vllm/vllm-openai:latest --model HuggingFaceTB/SmolLM2-360M --port 8001 --chat-template "{% if messages[0]['role'] == 'system' %}{{'<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n'}}{% endif %}{% for message in messages %}{% if message['role'] == 'user' %}{{ '<|im_start|>Doctor: ' + message['content'] + '<|im_end|>\n' }}{% elif message['role'] == 'assistant' %}{{ '<|im_start|>Patient: ' + message['content'] + '<|im_end|>\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>Patient:\n' }}{% endif %}" --enable-lora --lora-modules medsim=/models/finetuned-adapter --max-lora-rank 64
+
 ## Model Architecture
 
 This project uses [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) as the base model and applies Parameter-Efficient Fine-Tuning (PEFT) using LoRA (Low-Rank Adaptation) to reduce memory requirements and training time.
