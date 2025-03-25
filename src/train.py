@@ -30,7 +30,7 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import wandb
 import yaml
-
+from accelerate import PartialState
 from config import load_config
 
 # Configure logging with more informative format
@@ -302,6 +302,7 @@ def main():
         model_args.model_name_or_path,
         quantization_config=bnb_config,
         trust_remote_code=model_args.trust_remote_code,
+        device_map={"": PartialState().process_index},
         **kwargs
     )
     
