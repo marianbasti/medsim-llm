@@ -39,3 +39,4 @@ data/raw/*
 *.log
 wandb/
 models/
+output/

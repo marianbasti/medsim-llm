@@ -230,7 +230,30 @@ def main():
     
     # Load config
     config = load_config()
-    
+
+    # Override model arguments with config values if available
+    model_args.model_name_or_path = config.get('fine_tuning', {}).get('model', {}).get('name', model_args.model_name_or_path)
+    model_args.use_4bit = config.get('fine_tuning', {}).get('model', {}).get('use_4bit', model_args.use_4bit)
+    model_args.use_flash_attention = config.get('fine_tuning', {}).get('model', {}).get('use_flash_attention', model_args.use_flash_attention)
+
+    # Override training arguments with config values if available
+    training_args.per_device_train_batch_size = config.get('fine_tuning', {}).get('training', {}).get('batch_size', training_args.per_device_train_batch_size)
+    training_args.gradient_accumulation_steps = config.get('fine_tuning', {}).get('training', {}).get('gradient_accumulation_steps', training_args.gradient_accumulation_steps)
+    training_args.learning_rate = config.get('fine_tuning', {}).get('training', {}).get('learning_rate', training_args.learning_rate)
+    training_args.weight_decay = config.get('fine_tuning', {}).get('training', {}).get('weight_decay', training_args.weight_decay)
+    training_args.max_steps = config.get('fine_tuning', {}).get('training', {}).get('max_steps', training_args.max_steps)
+    training_args.warmup_ratio = config.get('fine_tuning', {}).get('training', {}).get('warmup_ratio', training_args.warmup_ratio)
+    training_args.save_steps = config.get('fine_tuning', {}).get('training', {}).get('save_steps', training_args.save_steps)
+    training_args.eval_steps = config.get('fine_tuning', {}).get('training', {}).get('eval_steps', training_args.eval_steps)
+
+    # Override data arguments with config values if available
+    data_args.train_file = config.get('fine_tuning', {}).get('data', {}).get('train_file', data_args.train_file)
+    data_args.validation_file = config.get('fine_tuning', {}).get('data', {}).get('validation_file', data_args.validation_file)
+    data_args.validation_split_percentage = int(config.get('fine_tuning', {}).get('data', {}).get('validation_split', data_args.validation_split_percentage) * 100)
+
+    # Override output directory
+    training_args.output_dir = config.get('fine_tuning', {}).get('output', {}).get('dir', training_args.output_dir)
+
     # Setup logging for the transformers library
     transformers.utils.logging.set_verbosity_info()
     transformers.utils.logging.enable_default_handler()
