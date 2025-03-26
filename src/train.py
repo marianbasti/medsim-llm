@@ -129,11 +129,14 @@ def create_patient_dataset(
         # First doctor's message to start the conversation
         doctor_message = doctor_turns[0]["content"]
         
-        # Create a prompt with instructions
-        prompt = f"You are roleplaying as a patient visiting a doctor. Follow the instructions below to stay in character.\n\n"
-        prompt += f"Patient Profile:\n{script}\n\n"
-        prompt += f"Respond to the doctor's question as the patient described above. Be concise and realistic.\n\n"
-        prompt += f"Doctor: {doctor_message}\n\nPatient:"
+        # Create a structured prompt with special tokens
+        system_message = "You are roleplaying as a patient in a medical consultation. Your responses should be in Spanish and based only on the patient profile details. Answer as the patient would, maintaining their perspective, concerns, and level of medical knowledge in Spanish."
+        
+        # Combine all parts into a well-structured prompt with special tokens
+        prompt = f"<|system|>\n{system_message}\n</|system|>\n\n"
+        prompt += f"<|script|>\n{script}\n</|script|>\n\n"
+        prompt += f"<|doctor|>\n{doctor_message}\n</|doctor|>\n\n"
+        prompt += f"<|patient|>\n"
         
         # Get the patient's response (if any)
         patient_response = ""
@@ -270,6 +273,20 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
     
+    # Add special tokens for the medical dialogue
+    special_tokens = {
+        "additional_special_tokens": [
+            "<|system|>", "</|system|>",
+            "<|doctor|>", "</|doctor|>",
+            "<|patient|>", "</|patient|>",
+            "<|script|>", "</|script|>"
+        ]
+    }
+    
+    # Add special tokens to the tokenizer
+    num_added_tokens = tokenizer.add_special_tokens(special_tokens)
+    logger.info(f"Added {num_added_tokens} special tokens to the tokenizer")
+    
     # Ensure we have EOS token
     if not tokenizer.pad_token_id:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -304,6 +321,10 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
         **kwargs
     )
+    
+    # Resize token embeddings to account for the new special tokens
+    model.resize_token_embeddings(len(tokenizer))
+    logger.info(f"Resized model token embeddings to {len(tokenizer)}")
     
     # Prepare the model for training with PEFT if specified
     if peft_args.use_peft:

@@ -1,10 +1,19 @@
 {% for message in messages %}
-{% if message['role'] == 'user' %}
-User: {{ message['content'] }}
+{% if message['role'] == 'system' %}
+<|system|>
+{{ message['content'] }}
+</|system|>
+
+{% elif message['role'] == 'user' %}
+<|doctor|>
+{{ message['content'] }}
+</|doctor|>
+
 {% elif message['role'] == 'assistant' %}
-Assistant: {{ message['content'] }}
-{% elif message['role'] == 'system' %}
-System: {{ message['content'] }}
+<|patient|>
+{{ message['content'] }}
+</|patient|>
 {% endif %}
 {% endfor %}
-{% if add_generation_prompt %}Assistant: {% endif %}
+{% if add_generation_prompt %}<|patient|>
+{% endif %}
