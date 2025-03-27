@@ -24,7 +24,6 @@ This can be used for medical training simulations, doctor communication practice
 │   ├── benchmark.py     # Benchmarking script
 │   ├── config.py        # Configuration module
 │   ├── evaluate.py      # Evaluation utilities
-│   ├── inference.py     # Inference script for using the model
 │   ├── synth_dialogues.py # Script for generating synthetic dialogues
 │   ├── train.py         # Fine-tuning script
 │   └── validation.py    # Validation utilities
