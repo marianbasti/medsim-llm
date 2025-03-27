@@ -113,31 +113,12 @@ This will generate evaluation metrics including:
 - BERTScore (semantic similarity)
 - Role consistency (how well the model stays in character)
 
-### 4. Inference
-
-To use the fine-tuned model for patient roleplay:
-
-```bash
-# Interactive mode
-python src/inference.py \
-  --model_path models/patient-llama-3.2-1B \
-  --script_file path/to/patient_script.json \
-  --interactive \
-  --use_4bit
-
-# Single question mode
-python src/inference.py \
-  --model_path models/patient-llama-3.2-1B \
-  --script_file path/to/patient_script.json \
-  --question "How are you feeling today?" \
-  --use_4bit
-```
 
 #### Using vLLM
 Alternatively, you can use vLLM for faster inference:
 
 ```bash
-docker run --rm --gpus all -p 8001:8001 -v ./output:/models vllm/vllm-openai:latest --model HuggingFaceTB/SmolLM2-360M --port 8001 --chat-template "{% if messages[0]['role'] == 'system' %}{{'<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n'}}{% endif %}{% for message in messages %}{% if message['role'] == 'user' %}{{ '<|im_start|>Doctor: ' + message['content'] + '<|im_end|>\n' }}{% elif message['role'] == 'assistant' %}{{ '<|im_start|>Patient: ' + message['content'] + '<|im_end|>\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>Patient:\n' }}{% endif %}" --enable-lora --lora-modules medsim=/models/finetuned-adapter --max-lora-rank 64
+docker run --rm --gpus all -p 8001:8001 -v ./models:/models vllm/vllm-openai:latest --model HuggingFaceTB/SmolLM2-360M --port 8001 --chat-template /models/template.jinja --enable-lora --lora-modules medsim=/models/patient --max-lora-rank 64
 
 ## Model Architecture
 
