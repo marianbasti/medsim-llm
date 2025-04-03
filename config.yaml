@@ -1,16 +1,16 @@
 generation:
-  batch_size: 10
-  num_workers: 4
+  batch_size: 1
+  num_workers: 1
   validation:
     enabled: true
-    max_turns: 20
-    min_turns: 4
+    max_turns: 75
+    min_turns: 8
 llm:
-  api_key: none
-  base_url: http://localhost:8001/v1/
+  api_key: citecca
+  base_url: http://localhost:7000/v1/
   max_retries: 3
   temperature: 1.0
-  timeout: 70000
+  timeout: 70
 output:
   backup_enabled: true
   format: jsonl
