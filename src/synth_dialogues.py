@@ -81,7 +81,9 @@ if __name__ == "__main__":
     
     # Generate sample cases
     logger.info(f"Generating {args.n_samples} dialogue samples")
-    cases = [(random.choice(argentinian_names), random.choice(illneses)) 
+    cases = [(random.choice(argentinian_names), 
+              random.choice(illneses),
+              random.randint(18, 71)) 
             for _ in range(args.n_samples)]
     
     current_batch = []
@@ -98,7 +100,7 @@ if __name__ == "__main__":
             completed = 0
             errors = 0
             
-            for sample in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id), cases):
+            for sample in executor.map(lambda x: generate_sample(client, x[0], x[1], model_id, x[2]), cases):
                 if sample:
                     current_batch.append(sample)
                     completed += 1

@@ -240,14 +240,12 @@ def save_batch(batch, output_file):
                 f.write(json.dumps(sanitized_item, ensure_ascii=False) + '\n')
         logger.info(f"Batch saved to backup file: {backup_file}")
 
-def generate_sample(client, name: str, illness: Tuple[str, str], model_id: str) -> Dict[str, Any]:
-    """Generate a dialogue for a given patient case"""
+def generate_sample(client, name, illness, model_id, age):
     try:
-        script = synth_script(client, prompt_script_2.format(
-            name=name, 
-            illness=illness[0],
-            symptoms=illness[1]
-        ), model_id)
+        # First generate patient script with age
+        prompt_script = f"""Generate a patient card for {name} who is {age} years old and has {illness[0]}. Their symptoms are: {illness[1]}.
+        The patient card must have the following features..."""
+        script = synth_script(client, prompt_script, model_id)
         
         # Generate dialogue
         dialogue = synth_dialogue(client, prompt_dialog, script, model_id)

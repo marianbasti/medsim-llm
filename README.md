@@ -104,20 +104,40 @@ python src/benchmark.py \
   --test_file data/raw/medsim-dialogues-llama70b.jsonl \
   --output_dir evaluation_results \
   --num_samples 100 \
-  --use_4bit
+  --use_4bit \
+  --log_level INFO
 ```
 
-This will generate evaluation metrics including:
+The evaluation includes multiple metrics and validation approaches:
+
+#### Automated Metrics
 - ROUGE scores (text similarity)
-- BERTScore (semantic similarity)
+- BERTScore (semantic similarity) 
 - Role consistency (how well the model stays in character)
 
+#### Script-based Validation
+- Dialogue coherence with patient script
+- Medical content accuracy
+- Symptom consistency
+- Demographic adherence
+
+#### Interactive Metrics
+- Turn balance in conversations
+- Language consistency
+- Interaction quality assessment
+- Content relevance scoring
+
+The results are saved as:
+- Detailed metrics in JSON format
+- Human-readable examples
+- Evaluation logs with key statistics
 
 #### Using vLLM
 Alternatively, you can use vLLM for faster inference:
 
 ```bash
 docker run --rm --gpus all -p 8001:8001 -v ./models:/models vllm/vllm-openai:latest --model HuggingFaceTB/SmolLM2-360M --port 8001 --chat-template /models/template.jinja --enable-lora --lora-modules medsim=/models/patient --max-lora-rank 64
+```
 
 ## Model Architecture
 
