@@ -3,7 +3,8 @@ import logging
 import tenacity
 from typing import Dict, Any, Tuple, Union
 from tqdm import tqdm
-from schemas import dialogue_json_schema, patient_script_json_schema, SPANISH_CHARS, prompt_script_2, prompt_dialog
+from schemas import SPANISH_CHARS, prompt_script_2, prompt_dialog
+from json_schemas import dialogue_json_schema, patient_script_json_schema
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -28,12 +29,25 @@ def api_call_with_retry(client, messages, temperature, response_format, model):
         raise ValueError("Model ID is required")
     
     logger.debug(f"API call to model: {model}")
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        extra_body={"guided_json": response_format}
-    )
+    logger.debug(f"Temperature: {temperature}")
+    logger.debug(f"Response format schema: {json.dumps(response_format, indent=2)}")
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            extra_body={"guided_json": response_format}
+        )
+        logger.debug(f"API call successful. Response ID: {response.id}")
+        return response
+    except Exception as e:
+        logger.error(f"API call failed: {str(e)}")
+        # Log detailed error information
+        if hasattr(e, 'response'):
+            logger.error(f"Response status: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text}")
+        raise
 
 def sanitize_spanish_text(text: Union[str, dict, list]) -> Union[str, dict, list]:
     """
@@ -126,9 +140,16 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         dict: The synthesized patient-doctor dialogue.
     """
     try:
+        formatted_prompt = prompt_dialog.format(patient_script=script)
+        logger.debug(f"Dialogue prompt length: {len(formatted_prompt)} characters")
+        logger.debug(f"Using dialogue schema: {type(dialogue_json_schema).__name__}")
+        
+        # Log a sample of the schema for debugging
+        logger.debug(f"Dialogue schema structure: {dialogue_json_schema.keys() if isinstance(dialogue_json_schema, dict) else 'Not a dict'}")
+        
         message_dialog = api_call_with_retry(
             client,
-            messages=[{'role': 'user', 'content': prompt_dialog.format(patient_script=script)}],
+            messages=[{'role': 'user', 'content': formatted_prompt}],
             temperature=1.0,
             response_format=dialogue_json_schema,
             model=model_id
@@ -136,19 +157,24 @@ def synth_dialogue(client, prompt_dialog, script, model_id):
         
         # Get content from the response
         content = message_dialog.choices[0].message.content
+        logger.debug(f"Received dialogue response type: {type(content).__name__}")
         
         # Check if content is already a dict or if it needs parsing
         if isinstance(content, str):
             try:
                 # Try to parse it as JSON
+                logger.debug("Parsing string response as JSON")
                 parsed_content = json.loads(content)
+                logger.debug(f"Successfully parsed JSON response with keys: {parsed_content.keys() if isinstance(parsed_content, dict) else 'Not a dict'}")
                 return parsed_content
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
                 # If it can't be parsed, wrap it in a proper structure
-                logger.warning("Received non-JSON response from model, attempting to format it")
+                logger.warning(f"Received non-JSON response from model: {str(e)}")
+                logger.debug(f"Response sample: {content[:100]}...")  # Log first 100 chars
                 return {"dialogue": [{"role": "doctor", "content": content}]}
         else:
             # Content is already a dictionary
+            logger.debug(f"Received dictionary response with keys: {content.keys() if hasattr(content, 'keys') else 'No keys'}")
             return content
     except Exception as e:
         logger.error(f"Error generating dialogue: {str(e)}")
@@ -166,6 +192,12 @@ def synth_script(client, prompt_script, model_id):
         str: The synthesized patient script.
     """
     try:
+        logger.debug(f"Patient script prompt length: {len(prompt_script)} characters")
+        logger.debug(f"Using patient schema: {type(patient_script_json_schema).__name__}")
+        
+        # Log a sample of the schema for debugging
+        logger.debug(f"Patient schema structure: {patient_script_json_schema.keys() if isinstance(patient_script_json_schema, dict) else 'Not a dict'}")
+        
         patient_script = api_call_with_retry(
             client,
             messages=[{'role': 'user', 'content': prompt_script}],
@@ -173,8 +205,16 @@ def synth_script(client, prompt_script, model_id):
             response_format=patient_script_json_schema,
             model=model_id
         )
-        # With vLLM, the content is already parsed as JSON
-        return patient_script.choices[0].message.content
+        
+        content = patient_script.choices[0].message.content
+        logger.debug(f"Received patient script response type: {type(content).__name__}")
+        
+        if isinstance(content, str):
+            logger.debug(f"Patient script response sample: {content[:100]}...")  # Log first 100 chars
+        else:
+            logger.debug(f"Patient script response keys: {content.keys() if hasattr(content, 'keys') else 'No keys'}")
+            
+        return content
     except Exception as e:
         logger.error(f"Error generating patient script: {str(e)}")
         raise

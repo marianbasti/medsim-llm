@@ -1,6 +1,10 @@
 from typing import List, Optional
+import logging
 from pydantic import BaseModel, Field
 from enum import Enum
+
+# Setup logger
+logger = logging.getLogger(__name__)
 
 # Pydantic models for dialogue JSON schema
 class RoleType(str, Enum):
@@ -14,8 +18,35 @@ class DialogMessage(BaseModel):
 class Dialogue(BaseModel):
     dialogue: List[DialogMessage]
 
-# Create JSON schema from the Pydantic model
-dialogue_json_schema = Dialogue.model_json_schema()
+# Log the schema creation
+logger.debug("Creating dialogue JSON schema for API")
+
+# Create a manually defined JSON schema that's compatible with xgrammar
+# instead of using Dialogue.model_json_schema() which contains unsupported features
+dialogue_json_schema = {
+    "type": "object",
+    "properties": {
+        "dialogue": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": ["doctor", "patient"]
+                    },
+                    "content": {
+                        "type": "string"
+                    }
+                },
+                "required": ["role", "content"]
+            }
+        }
+    },
+    "required": ["dialogue"]
+}
+
+logger.debug("Creating patient script JSON schema for API")
 
 # Patient script schema as a dictionary since it's more complex
 # with conditional validation that's harder to express in Pydantic
