@@ -128,12 +128,8 @@ def create_patient_dataset(
             
         # First doctor's message to start the conversation
         doctor_message = doctor_turns[0]["content"]
-        
-        # Create a structured prompt with special tokens
-        system_message = "You are roleplaying as a patient in a medical consultation. Your responses should be in Spanish and based only on the patient profile details. Answer as the patient would, maintaining their perspective, concerns, and level of medical knowledge in Spanish."
-        
+                
         # Combine all parts into a well-structured prompt with special tokens
-        prompt = f"<|system|>\n{system_message}\n</|system|>\n\n"
         prompt += f"<|script|>\n{script}\n</|script|>\n\n"
         prompt += f"<|doctor|>\n{doctor_message}\n</|doctor|>\n\n"
         prompt += f"<|patient|>\n"
@@ -276,7 +272,6 @@ def main():
     # Add special tokens for the medical dialogue
     special_tokens = {
         "additional_special_tokens": [
-            "<|system|>", "</|system|>",
             "<|doctor|>", "</|doctor|>",
             "<|patient|>", "</|patient|>",
             "<|script|>", "</|script|>"
