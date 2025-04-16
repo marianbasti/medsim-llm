@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """
-Training script for fine-tuning Llama-3.2-1B model on doctor-patient dialogues.
+Training script for fine-tuning HuggingFaceTB/SmolLM2-360M model on doctor-patient dialogues.
 The goal is to train the model to roleplay as a patient given a patient script.
+Simplified for single-GPU training.
 """
 
 import os
@@ -11,11 +12,10 @@ import logging
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
-import numpy as np
-from datasets import Dataset, load_dataset
+from datasets import Dataset
 import transformers
 from transformers import (
     AutoModelForCausalLM,
@@ -28,12 +28,8 @@ from transformers import (
     DataCollatorForSeq2Seq,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-import wandb
-import yaml
 
-from config import load_config
-
-# Configure logging with more informative format
+# Configure logging
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -43,40 +39,73 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def load_config():
+    """Load configuration from YAML file"""
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    try:
+        import yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        logger.info(f"Successfully loaded config from {config_path}")
+        return config
+    except Exception as e:
+        logger.warning(f"Could not load config file: {e}")
+        return {}
+
+
 @dataclass
 class ModelArguments:
     """Arguments pertaining to which model/config/tokenizer we are going to fine-tune."""
-    
-    model_name_or_path: str = "meta-llama/Llama-3.2-1B"
-    use_flash_attention: bool = True
-    use_4bit: bool = True
-    use_nested_quant: bool = True
-    bnb_4bit_compute_dtype: str = "float16"
-    bnb_4bit_quant_type: str = "nf4"
-    trust_remote_code: bool = False
+    model_name_or_path: str = field(
+        default="HuggingFaceTB/SmolLM2-360M",
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    use_flash_attention: bool = field(
+        default=True,
+        metadata={"help": "Whether to use flash attention for faster training"}
+    )
+    use_4bit: bool = field(
+        default=True,
+        metadata={"help": "Whether to use 4-bit quantization"}
+    )
+    bnb_4bit_compute_dtype: str = field(
+        default="float16",
+        metadata={"help": "Compute dtype for 4-bit quantization"}
+    )
 
 
 @dataclass
 class DataArguments:
     """Arguments pertaining to what data we are going to input our model for training."""
-    
-    train_file: str = None
-    validation_file: Optional[str] = None
-    max_seq_length: int = 4096
-    validation_split_percentage: int = 10
-    preprocessing_num_workers: Optional[int] = None
+    train_file: str = field(
+        default=None,
+        metadata={"help": "The input training data file (a JSON file)"}
+    )
+    max_seq_length: int = field(
+        default=4096,
+        metadata={"help": "Maximum sequence length for training"}
+    )
+    validation_split: float = field(
+        default=0.1,
+        metadata={"help": "Proportion of training data to use for validation"}
+    )
 
 
 @dataclass
-class PeftArguments:
-    """Arguments for PEFT (Parameter-Efficient Fine-Tuning)."""
-    
-    lora_alpha: int = 16
-    lora_dropout: float = 0.1
-    lora_r: int = 64
-    target_modules: str = "all-linear"
-    bias: str = "none"
-    use_peft: bool = True
+class TrainingParams:
+    """Parameters for training configuration."""
+    lora_r: int = field(
+        default=64,
+        metadata={"help": "Lora attention dimension"}
+    )
+    lora_alpha: int = field(
+        default=16,
+        metadata={"help": "Lora alpha parameter"}
+    )
+    lora_dropout: float = field(
+        default=0.1,
+        metadata={"help": "Dropout probability for Lora layers"}
+    )
 
 
 def create_patient_dataset(
@@ -92,6 +121,29 @@ def create_patient_dataset(
     Returns:
         Tuple containing the training dataset and optionally validation dataset
     """
+    if data_path is None:
+        raise ValueError("No training file provided. Please specify a train_file in config.yaml or via command line.")
+    
+    # Check if the path is relative and convert to absolute path relative to the project root
+    if not os.path.isabs(data_path):
+        # Try different possible locations
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        possible_paths = [
+            os.path.join(project_root, data_path),
+            os.path.join(project_root, "data", data_path),
+            os.path.join(project_root, "datasets", data_path)
+        ]
+        
+        found = False
+        for path in possible_paths:
+            if os.path.exists(path):
+                data_path = path
+                found = True
+                break
+        
+        if not found:
+            raise FileNotFoundError(f"Could not find training file. Tried: {possible_paths}")
+    
     logger.info(f"Loading data from {data_path}")
     
     raw_data = []
@@ -130,7 +182,7 @@ def create_patient_dataset(
         doctor_message = doctor_turns[0]["content"]
                 
         # Combine all parts into a well-structured prompt with special tokens
-        prompt += f"<|script|>\n{script}\n</|script|>\n\n"
+        prompt = f"<|script|>\n{script}\n</|script|>\n\n"
         prompt += f"<|doctor|>\n{doctor_message}\n</|doctor|>\n\n"
         prompt += f"<|patient|>\n"
         
@@ -160,35 +212,33 @@ def create_patient_dataset(
     
     # Tokenize function
     def tokenize_function(examples):
-        # Tokenize prompts and responses
         prompts = examples["prompt"]
         responses = examples["response"]
         
-        # Join them for the complete sequence
+        # Join prompts and responses
         texts = [prompt + response for prompt, response in zip(prompts, responses)]
         
-        # Calculate prompt lengths for later use
+        # Calculate prompt lengths for labels
         prompt_lengths = [len(tokenizer(prompt, add_special_tokens=False).input_ids) for prompt in prompts]
         
-        # Tokenize the full sequences with padding and truncation
+        # Tokenize with padding and truncation
         tokenized = tokenizer(
             texts,
             truncation=True,
             max_length=max_seq_length,
-            padding="max_length",  # Changed to max_length to ensure all examples have the same length
+            padding="max_length",
             return_tensors=None,
         )
         
         # Create label mask: -100 for prompt tokens, actual ids for response tokens
         labels = []
         for i, input_ids in enumerate(tokenized["input_ids"]):
-            # Set prompt part to -100 (ignored in loss)
             prompt_len = min(prompt_lengths[i], max_seq_length)
             label = [-100] * prompt_len + input_ids[prompt_len:]
-            # Ensure the same length as input_ids by padding with -100
+            
+            # Ensure proper padding with -100
             if len(label) < max_seq_length:
                 label.extend([-100] * (max_seq_length - len(label)))
-            # Truncate if too long
             label = label[:max_seq_length]
             labels.append(label)
         
@@ -202,17 +252,17 @@ def create_patient_dataset(
         batched=True,
         remove_columns=dataset.column_names,
         desc="Tokenizing dataset",
-        num_proc=os.cpu_count() // 2,  # Use half the available CPUs
+        num_proc=4
     )
     
     # Split into train and validation datasets
     if validation_split > 0:
         logger.info(f"Splitting dataset with validation ratio: {validation_split}")
-        tokenized_dataset = tokenized_dataset.train_test_split(
+        split_dataset = tokenized_dataset.train_test_split(
             test_size=validation_split, seed=seed
         )
-        train_dataset = tokenized_dataset["train"]
-        eval_dataset = tokenized_dataset["test"]
+        train_dataset = split_dataset["train"]
+        eval_dataset = split_dataset["test"]
         logger.info(f"Split complete - Training: {len(train_dataset)} examples, Validation: {len(eval_dataset)} examples")
     else:
         train_dataset = tokenized_dataset
@@ -223,53 +273,100 @@ def create_patient_dataset(
 
 
 def main():
-    # Parse arguments
-    parser = HfArgumentParser((ModelArguments, DataArguments, PeftArguments, TrainingArguments))
-    model_args, data_args, peft_args, training_args = parser.parse_args_into_dataclasses()
-    
-    # Load config
+    # Load config first - before argument parsing
     config = load_config()
-
-    # Override model arguments with config values if available
-    model_args.model_name_or_path = config.get('fine_tuning', {}).get('model', {}).get('name', model_args.model_name_or_path)
-    model_args.use_4bit = config.get('fine_tuning', {}).get('model', {}).get('use_4bit', model_args.use_4bit)
-    model_args.use_flash_attention = config.get('fine_tuning', {}).get('model', {}).get('use_flash_attention', model_args.use_flash_attention)
-
-    # Override training arguments with config values if available
-    training_args.per_device_train_batch_size = config.get('fine_tuning', {}).get('training', {}).get('batch_size', training_args.per_device_train_batch_size)
-    training_args.gradient_accumulation_steps = config.get('fine_tuning', {}).get('training', {}).get('gradient_accumulation_steps', training_args.gradient_accumulation_steps)
-    training_args.learning_rate = config.get('fine_tuning', {}).get('training', {}).get('learning_rate', training_args.learning_rate)
-    training_args.weight_decay = config.get('fine_tuning', {}).get('training', {}).get('weight_decay', training_args.weight_decay)
-    training_args.max_steps = config.get('fine_tuning', {}).get('training', {}).get('max_steps', training_args.max_steps)
-    training_args.warmup_ratio = config.get('fine_tuning', {}).get('training', {}).get('warmup_ratio', training_args.warmup_ratio)
-    training_args.save_steps = config.get('fine_tuning', {}).get('training', {}).get('save_steps', training_args.save_steps)
-    training_args.eval_steps = config.get('fine_tuning', {}).get('training', {}).get('eval_steps', training_args.eval_steps)
-
-    # Override data arguments with config values if available
-    data_args.train_file = config.get('fine_tuning', {}).get('data', {}).get('train_file', data_args.train_file)
-    data_args.validation_file = config.get('fine_tuning', {}).get('data', {}).get('validation_file', data_args.validation_file)
-    data_args.validation_split_percentage = int(config.get('fine_tuning', {}).get('data', {}).get('validation_split', data_args.validation_split_percentage) * 100)
-
-    # Override output directory
-    training_args.output_dir = config.get('fine_tuning', {}).get('output', {}).get('dir', training_args.output_dir)
-
-    # Setup logging for the transformers library
-    transformers.utils.logging.set_verbosity_info()
-    transformers.utils.logging.enable_default_handler()
+    
+    # Parse command line arguments
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingParams, TrainingArguments))
+    
+    # Explicitly set the default arguments using config values
+    default_model_name = config.get('fine_tuning', {}).get('model', {}).get('name', "HuggingFaceTB/SmolLM2-360M")
+    default_train_file = config.get('fine_tuning', {}).get('data', {}).get('train_file')
+    default_output_dir = config.get('fine_tuning', {}).get('output', {}).get('dir', "./output")
+    
+    logger.info(f"From config - Model: {default_model_name}, Train file: {default_train_file}, Output dir: {default_output_dir}")
+    
+    # Set default values including those from config
+    if len(sys.argv) == 1:
+        # Create explicit command line args with sensible defaults
+        default_args = []
+        
+        # Model arguments
+        default_args.extend(["--model_name_or_path", default_model_name])
+        default_args.extend(["--use_4bit", str(config.get('fine_tuning', {}).get('model', {}).get('use_4bit', True))])
+        default_args.extend(["--use_flash_attention", str(config.get('fine_tuning', {}).get('model', {}).get('use_flash_attention', True))])
+        
+        # Data arguments - MOST IMPORTANT: train_file
+        if default_train_file:
+            default_args.extend(["--train_file", default_train_file])
+            
+        default_args.extend(["--max_seq_length", str(config.get('fine_tuning', {}).get('training', {}).get('max_seq_length', 2048))])
+        default_args.extend(["--validation_split", str(config.get('fine_tuning', {}).get('data', {}).get('validation_split', 0.1))])
+        
+        # Training params
+        default_args.extend(["--lora_r", str(config.get('fine_tuning', {}).get('training', {}).get('lora_r', 32))])
+        default_args.extend(["--lora_alpha", str(config.get('fine_tuning', {}).get('training', {}).get('lora_alpha', 16))])
+        default_args.extend(["--lora_dropout", str(config.get('fine_tuning', {}).get('training', {}).get('lora_dropout', 0.1))])
+        
+        # Training arguments
+        default_args.extend(["--output_dir", default_output_dir])
+        default_args.extend(["--per_device_train_batch_size", str(config.get('fine_tuning', {}).get('training', {}).get('batch_size', 4))])
+        default_args.extend(["--gradient_accumulation_steps", str(config.get('fine_tuning', {}).get('training', {}).get('gradient_accumulation_steps', 8))])
+        default_args.extend(["--learning_rate", str(config.get('fine_tuning', {}).get('training', {}).get('learning_rate', 2e-5))])
+        default_args.extend(["--weight_decay", str(config.get('fine_tuning', {}).get('training', {}).get('weight_decay', 0.01))])
+        default_args.extend(["--warmup_ratio", str(config.get('fine_tuning', {}).get('training', {}).get('warmup_ratio', 0.03))])
+        default_args.extend(["--num_train_epochs", str(config.get('fine_tuning', {}).get('training', {}).get('epochs', 3))])
+        default_args.extend(["--logging_steps", "10"])
+        default_args.extend(["--eval_steps", str(config.get('fine_tuning', {}).get('training', {}).get('eval_steps', 100))])
+        default_args.extend(["--save_steps", str(config.get('fine_tuning', {}).get('training', {}).get('save_steps', 100))])
+        default_args.extend(["--fp16", "True"])
+        default_args.extend(["--save_total_limit", "3"])
+        default_args.extend(["--report_to", "none"])
+        
+        # Parse the default arguments
+        logger.info(f"Using default arguments: {default_args}")
+        model_args, data_args, training_params, training_args = parser.parse_args_into_dataclasses(default_args)
+    else:
+        # Parse user-provided command line args
+        logger.info("Parsing user-provided command line arguments")
+        model_args, data_args, training_params, training_args = parser.parse_args_into_dataclasses()
+    
+    # Check if train_file is set from command line, if not use from config
+    if data_args.train_file is None and default_train_file:
+        logger.info(f"Setting train_file from config: {default_train_file}")
+        data_args.train_file = default_train_file
+    
+    # Now validate the train_file is set
+    if data_args.train_file is None:
+        raise ValueError("No training file provided. Please specify a train_file in config.yaml or via command line.")
+    else:
+        logger.info(f"Using train_file: {data_args.train_file}")
+    
+    # Ensure output directory exists
+    os.makedirs(training_args.output_dir, exist_ok=True)
     
     # Set seed
     set_seed(training_args.seed)
-    logger.info(f"Training with random seed: {training_args.seed}")
+    logger.info(f"Training with seed: {training_args.seed}")
+    
+    # Verify GPU availability
+    if torch.cuda.is_available():
+        device_id = torch.cuda.current_device()
+        logger.info(f"Using GPU: cuda:{device_id}")
+        # Limit to a single GPU
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+    else:
+        logger.warning("No GPU found, training will be slow on CPU!")
     
     # Load tokenizer
     logger.info(f"Loading tokenizer: {model_args.model_name_or_path}")
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
-        padding_side="right",  # For generation tasks, pad on right
-        trust_remote_code=model_args.trust_remote_code,
+        padding_side="right",
+        trust_remote_code=True,
     )
     
-    # Add special tokens for the medical dialogue
+    # Add special tokens for medical dialogue
     special_tokens = {
         "additional_special_tokens": [
             "<|doctor|>", "</|doctor|>",
@@ -278,138 +375,128 @@ def main():
         ]
     }
     
-    # Add special tokens to the tokenizer
+    # Add tokens to tokenizer
     num_added_tokens = tokenizer.add_special_tokens(special_tokens)
     logger.info(f"Added {num_added_tokens} special tokens to the tokenizer")
     
-    # Ensure we have EOS token
-    if not tokenizer.pad_token_id:
+    # Ensure pad token exists
+    if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+        logger.info("Using EOS token as padding token")
     
-    # Load model with quantization if specified
+    # Configure 4-bit quantization if specified
+    compute_dtype = getattr(torch, model_args.bnb_4bit_compute_dtype)
+    quantization_config = None
     if model_args.use_4bit:
-        logger.info("Using 4-bit quantization for training")
-        compute_dtype = getattr(torch, model_args.bnb_4bit_compute_dtype)
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=model_args.use_4bit,
-            bnb_4bit_quant_type=model_args.bnb_4bit_quant_type,
+        logger.info("Using 4-bit quantization")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
             bnb_4bit_compute_dtype=compute_dtype,
-            bnb_4bit_use_double_quant=model_args.use_nested_quant,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
         )
-    else:
-        bnb_config = None
     
-    # Additional keyword arguments
-    kwargs = {
-        # "device_map": "auto",
-    }
-    
+    # Load model for single GPU
+    model_kwargs = {}
     if model_args.use_flash_attention:
         logger.info("Using Flash Attention 2.0")
-        kwargs["attn_implementation"] = "flash_attention_2"
+        model_kwargs["attn_implementation"] = "flash_attention_2"
+        
+    # Set device map for a single GPU
+    #if torch.cuda.is_available():
+    #    model_kwargs["device_map"] = "cuda:0"
+    #else:
+    #    model_kwargs["device_map"] = "cpu"
     
     # Load base model
-    logger.info(f"Loading base model {model_args.model_name_or_path}")
+    logger.info(f"Loading model {model_args.model_name_or_path}")
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
-        quantization_config=bnb_config,
-        trust_remote_code=model_args.trust_remote_code,
-        **kwargs
+        quantization_config=quantization_config,
+        trust_remote_code=True,
+        torch_dtype=compute_dtype,
+        **model_kwargs
     )
     
-    # Resize token embeddings to account for the new special tokens
+    # Resize token embeddings for new tokens
     model.resize_token_embeddings(len(tokenizer))
-    logger.info(f"Resized model token embeddings to {len(tokenizer)}")
+    logger.info(f"Model vocab size after resizing: {len(tokenizer)}")
     
-    # Prepare the model for training with PEFT if specified
-    if peft_args.use_peft:
-        logger.info("Setting up Parameter-Efficient Fine-Tuning (PEFT)")
-        model = prepare_model_for_kbit_training(model)
-        
-        # Parse target modules
-        if peft_args.target_modules == "all-linear":
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        else:
-            target_modules = peft_args.target_modules.split(",") if peft_args.target_modules else None
-        
-        # Configure PEFT (LoRA)
-        logger.info(f"LoRA configuration: r={peft_args.lora_r}, alpha={peft_args.lora_alpha}, dropout={peft_args.lora_dropout}")
-        peft_config = LoraConfig(
-            r=peft_args.lora_r,
-            lora_alpha=peft_args.lora_alpha,
-            lora_dropout=peft_args.lora_dropout,
-            target_modules=target_modules,
-            bias=peft_args.bias,
-            task_type="CAUSAL_LM",
-        )
-        
-        # Get PEFT model
-        model = get_peft_model(model, peft_config)
-        
-        # Log trainable parameters
-        trainable_params, all_params = model.get_nb_trainable_parameters()
-        logger.info(f"Trainable parameters: {trainable_params:,d} ({trainable_params / all_params:.2%} of {all_params:,d} total parameters)")
+    # Prepare model for PEFT training
+    logger.info("Preparing model for PEFT/LoRA training")
+    model = prepare_model_for_kbit_training(model)
     
-    # Create the dataset
+    # Configure LoRA
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    peft_config = LoraConfig(
+        r=training_params.lora_r,
+        lora_alpha=training_params.lora_alpha,
+        lora_dropout=training_params.lora_dropout,
+        target_modules=target_modules,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    
+    # Apply LoRA
+    model = get_peft_model(model, peft_config)
+    
+    # Log trainable parameters
+    trainable_params, all_params = model.get_nb_trainable_parameters()
+    logger.info(f"Trainable parameters: {trainable_params:,d} ({trainable_params/all_params:.2%} of {all_params:,d})")
+    
+    # Create dataset
     train_dataset, eval_dataset = create_patient_dataset(
-        data_args.train_file, 
+        data_args.train_file,
         tokenizer=tokenizer,
         max_seq_length=data_args.max_seq_length,
-        validation_split=data_args.validation_split_percentage / 100,
+        validation_split=data_args.validation_split,
         seed=training_args.seed
     )
     
-    # Set remove_unused_columns=False in the training arguments
-    if not hasattr(training_args, "remove_unused_columns") or training_args.remove_unused_columns:
-        logger.info("Setting remove_unused_columns=False to prevent column mismatch errors")
-        training_args.remove_unused_columns = False
-    
-    # Create a custom data collator that properly handles padding
-    logger.info("Creating data collator with padding and truncation")
+    # Data collator
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
-        padding=True,
-        label_pad_token_id=-100,
+        padding=True, 
         return_tensors="pt",
+        label_pad_token_id=-100,
     )
     
-    # Initialize trainer
-    logger.info("Initializing Trainer")
+    # Create trainer - ensure no DataParallel
+    training_args.remove_unused_columns = False
+    
+    # Create Trainer for single GPU
+    logger.info("Creating Trainer for single GPU training")
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
-        data_collator=data_collator,  # Using the custom data collator
+        data_collator=data_collator,
     )
     
     # Start training
-    logger.info(f"Starting training with batch size: {training_args.per_device_train_batch_size}, gradient accumulation: {training_args.gradient_accumulation_steps}")
-    logger.info(f"Using learning rate: {training_args.learning_rate}, weight decay: {training_args.weight_decay}")
-    logger.info(f"Training will save checkpoints to: {training_args.output_dir}")
+    logger.info(f"Starting training with batch size: {training_args.per_device_train_batch_size}, "
+                f"gradient accumulation: {training_args.gradient_accumulation_steps}")
     
     train_result = trainer.train()
     
-    # Save model
-    logger.info(f"Training complete! Saving model to {training_args.output_dir}")
+    # Save final model
+    logger.info(f"Saving model to {training_args.output_dir}")
     trainer.save_model()
-    
-    # Save tokenizer
     tokenizer.save_pretrained(training_args.output_dir)
     
-    # Log metrics
+    # Save training metrics
     metrics = train_result.metrics
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     
-    # Run evaluation if validation dataset exists
+    # Run final evaluation
     if eval_dataset:
         logger.info("Running final evaluation")
         eval_metrics = trainer.evaluate()
         trainer.log_metrics("eval", eval_metrics)
         trainer.save_metrics("eval", eval_metrics)
-        logger.info(f"Evaluation results: {eval_metrics}")
     
     logger.info("Training completed successfully!")
 
