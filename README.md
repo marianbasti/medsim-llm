@@ -23,10 +23,11 @@ This can be used for medical training simulations, doctor communication practice
 ├── src/
 │   ├── benchmark.py     # Benchmarking script
 │   ├── config.py        # Configuration module
-│   ├── evaluate.py      # Evaluation utilities
+│   ├── evaluate_patient_model.py      # Evaluation utilities
 │   ├── synth_dialogues.py # Script for generating synthetic dialogues
 │   ├── train.py         # Fine-tuning script
-│   └── validation.py    # Validation utilities
+│   ├── validation.py    # Validation utilities
+│   └── merge_peft.py  # Model merging utilities
 └── tests/               # Unit tests
 ```
 
@@ -68,7 +69,7 @@ To fine-tune the model, run:
 ```bash
 python src/train.py \
   --model_name_or_path meta-llama/Llama-3.2-1B \
-  --train_file data/raw/medsim-dialogues-llama70b.jsonl \
+  --train_file data/raw/dialogues.jsonl \
   --output_dir models/patient-llama-3.2-1B \
   --num_train_epochs 3 \
   --per_device_train_batch_size 8 \
@@ -94,49 +95,16 @@ Alternatively, you can edit the parameters in `config.yaml` and run:
 python src/train.py
 ```
 
-### 3. Evaluation and Benchmarking
+### 3. Model Merging
 
-To evaluate the fine-tuned model:
+### 4. Evaluation and Benchmarking
 
-```bash
-python src/benchmark.py \
-  --model_path models/patient-llama-3.2-1B \
-  --test_file data/raw/medsim-dialogues-llama70b.jsonl \
-  --output_dir evaluation_results \
-  --num_samples 100 \
-  --use_4bit \
-  --log_level INFO
-```
-
-The evaluation includes multiple metrics and validation approaches:
-
-#### Automated Metrics
-- ROUGE scores (text similarity)
-- BERTScore (semantic similarity) 
-- Role consistency (how well the model stays in character)
-
-#### Script-based Validation
-- Dialogue coherence with patient script
-- Medical content accuracy
-- Symptom consistency
-- Demographic adherence
-
-#### Interactive Metrics
-- Turn balance in conversations
-- Language consistency
-- Interaction quality assessment
-- Content relevance scoring
-
-The results are saved as:
-- Detailed metrics in JSON format
-- Human-readable examples
-- Evaluation logs with key statistics
 
 #### Using vLLM
 Alternatively, you can use vLLM for faster inference:
 
 ```bash
-docker run --rm --gpus all -p 8001:8001 -v ./models:/models vllm/vllm-openai:latest --model HuggingFaceTB/SmolLM2-360M --port 8001 --chat-template /models/template.jinja --enable-lora --lora-modules medsim=/models/patient --max-lora-rank 64
+docker run --runtime nvidia --gpus all -v ./models:/models -p 8000:8000 --ipc=host --rm vllm/vllm-openai:latest --model /models/merged_model --enable-chunked-prefill  --gpu-memory-utilization 0.7 --max-model-len 2048 --chat-template /models/merged_model/template.jinja
 ```
 
 ## Model Architecture
