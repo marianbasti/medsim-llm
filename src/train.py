@@ -39,9 +39,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_config():
-    """Load configuration from YAML file"""
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+def load_config(config_path=None):
+    """Load configuration from YAML file
+    
+    Args:
+        config_path: Optional path to config file. If None, uses default location.
+    """
+    if config_path is None:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    
+    # Check if the path exists
+    if not os.path.exists(config_path):
+        logger.warning(f"Config file not found at {config_path}")
+        return {}
+        
     try:
         import yaml
         with open(config_path, 'r') as f:
@@ -273,8 +284,16 @@ def create_patient_dataset(
 
 
 def main():
-    # Load config first - before argument parsing
-    config = load_config()
+    # First, parse just the config argument
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument('--config', type=str, default=None, help='Path to config YAML file')
+    config_args, remaining_args = config_parser.parse_known_args()
+    
+    # Load config with the provided path
+    config = load_config(config_args.config)
+    
+    # Update sys.argv to remove the --config argument for HfArgumentParser
+    sys.argv = [sys.argv[0]] + remaining_args
     
     # Parse command line arguments
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingParams, TrainingArguments))
